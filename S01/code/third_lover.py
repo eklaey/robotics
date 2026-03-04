@@ -2,14 +2,15 @@
 from unifr_api_epuck import wrapper
 import time
 
-MY_IP = '192.168.2.206'  # change robot number
-robot = wrapper.get_robot(MY_IP)
+MY_IP = '192.168.2.205'  # change robot number
+robot = wrapper.get_robot(MY_IP)    
 
 NORM_SPEED = 1.5
 PROX_TH = 250
+PROX_TH /= 4  # Reduce threshold to make it more reactive to obstacles
 
 # Weights for weighted proximity calculation - maybe needs to be tuned for different behaviors (comment/uncomment)
-a, b, c, d = 1, 1, 1, 1
+a, b, c, d = 1, 1.5, 2, 4
 
 # State definitions
 LOVER_STATE = "LOVER"
@@ -17,10 +18,10 @@ EXPLORER_STATE = "EXPLORER"
 EQUILIBRIUM_STATE = "EQUILIBRIUM"
 
 # Thresholds for robust condition detection (might need to be tuned based on robot behavior)
-EQUILIBRIUM_SPEED_THRESHOLD = 0.2  # Robot almost stopped
-EQUILIBRIUM_TIME_THRESHOLD = 0.5   # Must be stopped for 0.5 seconds
-DEPARTURE_PROX_THRESHOLD = 100     # Far enough from obstacle
-DEPARTURE_TIME_THRESHOLD = 1.0     # Must be away for 1 second
+EQUILIBRIUM_SPEED_THRESHOLD = 1     # Robot almost stopped
+EQUILIBRIUM_TIME_THRESHOLD = 1      # Must be stopped 
+DEPARTURE_PROX_THRESHOLD = 100      # Far enough from obstacle
+DEPARTURE_TIME_THRESHOLD = 1        # Must be away
 
 # Initialize robot
 robot.init_sensors()
