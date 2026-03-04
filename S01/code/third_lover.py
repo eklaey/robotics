@@ -1,5 +1,6 @@
-# Basic lover implementation
+# Love at third time: AFSM that switches between LOVER and EXPLORER behaviors 3 times before settling in equilibrium
 from unifr_api_epuck import wrapper
+import time
 
 MY_IP = '192.168.2.206'  # change robot number
 robot = wrapper.get_robot(MY_IP)
@@ -7,15 +8,102 @@ robot = wrapper.get_robot(MY_IP)
 NORM_SPEED = 1.5
 PROX_TH = 250
 
+# Weights for weighted proximity calculation - maybe needs to be tuned for different behaviors (comment/uncomment)
+a, b, c, d = 1, 1, 1, 1
+
+# State definitions
+LOVER_STATE = "LOVER"
+EXPLORER_STATE = "EXPLORER"
+EQUILIBRIUM_STATE = "EQUILIBRIUM"
+
+# Thresholds for robust condition detection (might need to be tuned based on robot behavior)
+EQUILIBRIUM_SPEED_THRESHOLD = 0.2  # Robot almost stopped
+EQUILIBRIUM_TIME_THRESHOLD = 0.5   # Must be stopped for 0.5 seconds
+DEPARTURE_PROX_THRESHOLD = 100     # Far enough from obstacle
+DEPARTURE_TIME_THRESHOLD = 1.0     # Must be away for 1 second
+
+# Initialize robot
 robot.init_sensors()
 robot.calibrate_prox()
 
-#infinite loop
+# State machine variables
+current_state = LOVER_STATE
+obstacle_count = 0
+state_entry_time = time.time()
+timer_equilibrium_start = None
+timer_departure_start = None
+
+# Main loop
 while robot.go_on():
+    current_time = time.time()
     prox_values = robot.get_calibrate_prox()
-    prox = (prox_values[0] + prox_values[7])/2
-    ds = (NORM_SPEED * prox) / PROX_TH
-    speed = NORM_SPEED - ds
-    robot.set_speed(speed)
     
+    # Calculate weighted averages for right and left sensors
+    prox_right = (a * prox_values[0] + b * prox_values[1] + c * prox_values[2] + d * prox_values[3]) / (a + b + c + d)
+    prox_left = (a * prox_values[7] + b * prox_values[6] + c * prox_values[5] + d * prox_values[4]) / (a + b + c + d)
+    
+    if current_state == LOVER_STATE:
+        # LOVER: Parallel-coupling ==> attraction
+        ds_left = (NORM_SPEED * prox_left) / PROX_TH
+        ds_right = (NORM_SPEED * prox_right) / PROX_TH
+        
+        left_speed = NORM_SPEED - ds_left
+        right_speed = NORM_SPEED - ds_right
+        
+        robot.set_speed(left_speed, right_speed)
+
+        # Detect equilibrium: robot almost stopped and in front of obstacle
+        if abs(left_speed) < EQUILIBRIUM_SPEED_THRESHOLD and abs(right_speed) < EQUILIBRIUM_SPEED_THRESHOLD:
+            if timer_equilibrium_start is None:
+                timer_equilibrium_start = current_time
+            
+            # If stayed at low speed for enough time, reached equilibrium
+            if current_time - timer_equilibrium_start >= EQUILIBRIUM_TIME_THRESHOLD:
+                obstacle_count += 1
+                print(f"Equilibrium reached! Obstacle #{obstacle_count}")
+                
+                if obstacle_count >= 3:
+                    current_state = EQUILIBRIUM_STATE
+                    print("Third obstacle! Staying in equilibrium.")
+                    robot.enable_all_led()  # Keep LED on to indicate final state
+                else:
+                    current_state = EXPLORER_STATE
+                    print("Switching to EXPLORER mode.")
+                
+                state_entry_time = current_time
+                timer_equilibrium_start = None
+                timer_departure_start = None
+        else:
+            timer_equilibrium_start = None
+            
+    elif current_state == EXPLORER_STATE:
+        # EXPLORER: Cross-coupling ==> avoidance
+        ds_left = (NORM_SPEED * prox_right) / PROX_TH
+        ds_right = (NORM_SPEED * prox_left) / PROX_TH
+        
+        left_speed = NORM_SPEED - ds_left
+        right_speed = NORM_SPEED - ds_right
+        
+        robot.set_speed(left_speed, right_speed)
+        
+        # Detect departure from obstacle: left and right proximity sensors low
+        if prox_left < DEPARTURE_PROX_THRESHOLD and prox_right < DEPARTURE_PROX_THRESHOLD:
+            if timer_departure_start is None:
+                timer_departure_start = current_time
+            
+            # If stayed away long enough, confirmed departure
+            if current_time - timer_departure_start >= DEPARTURE_TIME_THRESHOLD:
+                print("Departure detected! Switching back to LOVER mode.")
+                current_state = LOVER_STATE
+                state_entry_time = current_time
+                timer_equilibrium_start = None
+                timer_departure_start = None
+        else:
+            timer_departure_start = None
+            
+    elif current_state == EQUILIBRIUM_STATE:
+        # EQUILIBRIUM: Robot stays in place facing the third obstacle ==> no movement
+        robot.set_speed(0, 0)
+        print("Staying in equilibrium facing the obstacle. FINISHED!")
+
 robot.clean_up()
