@@ -2,8 +2,8 @@
 from unifr_api_epuck import wrapper
 
 MY_IP = '192.168.2.205' # change robot number
-MAX_STEPS = 600
-
+MAX_STEPS = 1600        # used with a 40cm ruler, forward/backward
+#600 for one way + stops for a bit on both sides
 robot = wrapper.get_robot(MY_IP)
 
 robot.init_sensors()
@@ -26,7 +26,12 @@ data.write('\n')
 robot.sleep(3)
 
 for step in range(MAX_STEPS):
-    robot.set_speed(2)
+    if step < 600:
+        robot.set_speed(2)
+    elif step<800 or step>1400:
+        robot.set_speed(0)
+    else:
+        robot.set_speed(-2)
     robot.go_on()
     ps = robot.get_calibrate_prox()
     #ps = robot.get_prox() # uncomment if analyzing uncalibrated sensor data
