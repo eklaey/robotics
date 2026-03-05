@@ -9,7 +9,7 @@ NORM_SPEED = 1.5
 PROX_TH = 250
 PROX_TH /= 4  # Reduce threshold to make it more reactive to obstacles
 
-# Weights for weighted proximity calculation - maybe needs to be tuned for different behaviors (comment/uncomment)
+# Weights for weighted proximity calculation (taken from lover.py and explorer.py from testing)
 a, b, c, d = 1, 1.5, 2, 4
 
 # State definitions
