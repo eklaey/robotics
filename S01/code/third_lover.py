@@ -1,6 +1,7 @@
 # Love at third time: AFSM that switches between LOVER and EXPLORER behaviors 3 times before settling in equilibrium
 from unifr_api_epuck import wrapper
 import time
+import numpy as np
 
 MY_IP = '192.168.2.205'  # change robot number
 robot = wrapper.get_robot(MY_IP)    
@@ -27,6 +28,8 @@ DEPARTURE_TIME_THRESHOLD = 1        # Must be away
 robot.init_sensors()
 robot.calibrate_prox()
 
+prox_array = []  # To store recent proximity values for smoothing
+
 # State machine variables
 current_state = LOVER_STATE
 obstacle_count = 0
@@ -43,6 +46,13 @@ while robot.go_on():
     prox_right = (a * prox_values[0] + b * prox_values[1] + c * prox_values[2] + d * prox_values[3]) / (a + b + c + d)
     prox_left = (a * prox_values[7] + b * prox_values[6] + c * prox_values[5] + d * prox_values[4]) / (a + b + c + d)
     
+    # Calculate average proximity for equilibrium detection
+    prox_avg = (prox_right + prox_left) / 2
+    
+    ##prox_array.append(prox_avg)
+    ##if len(prox_array) > 10:
+    ##    prox_array.pop(0)
+
     if current_state == LOVER_STATE:
         # LOVER: Parallel-coupling ==> attraction
         ds_left = (NORM_SPEED * prox_left) / PROX_TH
@@ -53,8 +63,11 @@ while robot.go_on():
         
         robot.set_speed(left_speed, right_speed)
 
+        prev_prox_avg = np.mean(prox_array[-10:]) if len(prox_array) >= 10 else prox_avg
+
+        
         # Detect equilibrium: robot almost stopped and in front of obstacle
-        if abs(left_speed) < EQUILIBRIUM_SPEED_THRESHOLD and abs(right_speed) < EQUILIBRIUM_SPEED_THRESHOLD:
+        if prox_avg > PROX_TH and (prox_avg - prev_prox_avg) < 1:  # Check if proximity is high and stable
             if timer_equilibrium_start is None:
                 timer_equilibrium_start = current_time
             
