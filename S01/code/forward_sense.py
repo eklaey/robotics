@@ -6,7 +6,7 @@ robot = wrapper.get_robot(MY_IP)
 
 NORM_SPEED = 1.5
 PROX_TH = 250
-PROX_TH /= 4
+#PROX_TH /= 4
 
 robot.init_sensors()
 robot.calibrate_prox()
@@ -35,9 +35,10 @@ while robot.go_on():
     
     prev_prox_avg = np.mean(prox_array[-10:]) if len(prox_array) >= 10 else prox
         
-    if prox > PROX_TH and equals(prox, prev_prox_avg):
+    if prev_prox_avg > PROX_TH and equals(prox, prev_prox_avg):
         robot.set_speed(0)
         print("---Reached equilibrium at prox:", prox)
+        break
     else:
         print("Current prox:", prox)
         prox_array.append(prox)
