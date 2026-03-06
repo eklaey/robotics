@@ -6,14 +6,16 @@ MY_IP = '192.168.2.205'     # REMEMBER: change last IP number to ROBOT number
 robot = wrapper.get_robot(MY_IP)    
 
 # Behavior parameters for tuning robotic "love" and "exploration" dynamics
-NORM_SPEED = 1.5 + 0.5      # Increase base speed to make behavior more dynamic
-PROX_TH = 250 - 100         # Reduce threshold to make it more reactive to obstacles              
-STATE_STEPS_TH = 300        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
+NORM_SPEED = 1.5   
+PROX_TH = 250/2         # Reduce threshold to make it more reactive to obstacles              
+STATE_STEPS_TH = 500        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
 EQUILIBRIUM_TH = 10         # Threshold for considering proximity values as "stable" for equilibrium detection
-SMOOTHING_WINDOW_SIZE = 10  # Number of recent proximity values to average for smoothing
+SMOOTHING_WINDOW_SIZE = 25  # Number of recent proximity values to average for smoothing
 
 # Weights for weighted proximity calculation (taken from lover.py and explorer.py from testing)
-a, b, c, d, e = 1, 1.5, 2, 4, -2 #d->lover, e->explorer
+a, b, c = 1, 2, 4  # Base weights for front, side, and rear sensors
+LOVER_WEIGHT = 4  # Additional weight for lover behavior (positive to attract)
+EXPLORER_WEIGHT = -4  # Additional weight for explorer behavior (negative to repel)
 
 # State definitions
 LOVER_STATE = "LOVER"
@@ -27,11 +29,12 @@ prox_array = []
 current_state = LOVER_STATE
 obstacle_counter = 0
 state_step_counter = 0
+d = LOVER_WEIGHT  # Lover weight
 
 # Initialize robot
 robot.init_sensors()
 robot.calibrate_prox()
-robot.sleep(5)          # give some time for experiment setup before starting main loop 
+robot.sleep(5)
 
 # MAIN LOOP --------------------------------------------------------------------------------------------------------------------
 while robot.go_on():
@@ -53,6 +56,7 @@ while robot.go_on():
     # AUGMENTED FINITE STATE MACHINE -------------------------------------------------------------------------------------------
     if current_state == LOVER_STATE:
         robot.enable_all_led()  # Turn on LED on to indicate LOVER state
+        d = LOVER_WEIGHT  # Lover weight
         
         # LOVER: Parallel-coupling ==> attraction
         if not (prev_prox_avg > PROX_TH and 
@@ -84,6 +88,7 @@ while robot.go_on():
             
     elif current_state == EXPLORER_STATE:
         robot.disable_all_led()  # Turn off LED to indicate EXPLORER state
+        d = EXPLORER_WEIGHT  # Explorer weight
         
         # EXPLORER: Cross-coupling ==> avoidance
         if not (prev_prox_avg < PROX_TH and 
@@ -113,7 +118,7 @@ while robot.go_on():
         robot.set_speed(0)
 
         if state_step_counter > STATE_STEPS_TH:
-            print(f"STABLE EQUILIBRIUM maintained at prox: {prox_avg}")
+            print(f"STABLE EQUILIBRIUM maintained! Terminating...")
             break  # Exit loop and end program after confirming stable equilibrium
     # AUGMENTED FINITE STATE MACHINE (END) --------------------------------------------------------------------------------------
 
