@@ -4,3 +4,6 @@ Thumbs.db
 
 # VS Code specific files
 .vscode/
+
+# Git specific files
+.git/credentials
