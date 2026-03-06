@@ -6,16 +6,16 @@ MY_IP = '192.168.2.202'     # REMEMBER: change last IP number to ROBOT number
 robot = wrapper.get_robot(MY_IP)    
 
 # Behavior parameters for tuning robotic "love" and "exploration" dynamics
-NORM_SPEED = 1.5 + 0.5  # Base speed for movement; can be increased for more dynamic behavior  
-PROX_TH = 250/2         # Reduce threshold to make it more reactive to obstacles              
-STATE_STEPS_TH = 500        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
+NORM_SPEED = 1.5 + 0.5      # Base speed for movement; can be increased for more dynamic behavior  
+PROX_TH = 300/2             # Reduce threshold to make it more reactive to obstacles              
+STATE_STEPS_TH = 300        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
 EQUILIBRIUM_TH = 15         # Threshold for considering proximity values as "stable" for equilibrium detection
 SMOOTHING_WINDOW_SIZE = 20  # Number of recent proximity values to average for smoothing
 
 # Weights for weighted proximity calculation (taken from lover.py and explorer.py from testing)
-a, b, c = 1, 2, 4  # Base weights for front, side, and rear sensors
-LOVER_WEIGHT = 4  # Additional weight for lover behavior (positive to attract)
-EXPLORER_WEIGHT = -2  # Additional weight for explorer behavior (negative to repel)
+WEIGHTS = []
+LOVER_WEIGHTS = [1, 2, 4, 4]            # Weights for lover behavior (positive rear to attract)
+EXPLORER_WEIGHTS = [1, 2, 4, -2]        # Weights for explorer behavior (negative rear to repel)
 
 # State definitions
 LOVER_STATE = "LOVER"
@@ -29,7 +29,7 @@ prox_array = []
 current_state = LOVER_STATE
 obstacle_counter = 0
 state_step_counter = 0
-d = LOVER_WEIGHT  # Lover weight
+WEIGHTS = LOVER_WEIGHTS  # Start with lover weights
 
 # Initialize robot
 robot.init_sensors()
@@ -40,9 +40,9 @@ robot.sleep(5)
 while robot.go_on():
     prox_values = robot.get_calibrate_prox()
 
-    prox_right = (a * prox_values[0] + b * prox_values[1] + c * prox_values[2] + d * prox_values[3]) / (a + b + c + d)
-    prox_left = (a * prox_values[7] + b * prox_values[6] + c * prox_values[5] + d * prox_values[4]) / (a + b + c + d)
-    
+    prox_right = (WEIGHTS[0] * prox_values[0] + WEIGHTS[1] * prox_values[1] + WEIGHTS[2] * prox_values[2] + WEIGHTS[3] * prox_values[3]) / sum(WEIGHTS)
+    prox_left = (WEIGHTS[0] * prox_values[7] + WEIGHTS[1] * prox_values[6] + WEIGHTS[2] * prox_values[5] + WEIGHTS[3] * prox_values[4]) / sum(WEIGHTS)
+
     prox_avg = (prox_right + prox_left) / 2
     
     # Updating sliding window and trim to last 10 values
@@ -50,13 +50,12 @@ while robot.go_on():
     if len(prox_array) > SMOOTHING_WINDOW_SIZE:
         prox_array = prox_array[-SMOOTHING_WINDOW_SIZE:]
     prev_prox_avg = np.mean(prox_array)
-    
-    state_step_counter += 1  # Increment step counter for current state
 
     # AUGMENTED FINITE STATE MACHINE -------------------------------------------------------------------------------------------
     if current_state == LOVER_STATE:
         robot.enable_all_led()  # Turn on LED on to indicate LOVER state
-        d = LOVER_WEIGHT  # Lover weight
+        WEIGHTS = LOVER_WEIGHTS 
+        state_step_counter += 1 # Increment step counter for current state
         
         ds_left = (NORM_SPEED * prox_left) / PROX_TH
         ds_right = (NORM_SPEED * prox_right) / PROX_TH
@@ -81,16 +80,19 @@ while robot.go_on():
             if obstacle_counter >= 3:
                 current_state = EQUILIBRIUM_STATE
                 print("EQUILIBRIUM reached!")
+                
+                state_step_counter = STATE_STEPS_TH / 2  # Start counting steps for equilibrium stability check
             else:
                 current_state = EXPLORER_STATE
                 print("EXPLORER activated!")
             
-            state_step_counter = 0  # Reset step counter for new state
+                state_step_counter = 0  # Reset step counter for new state
             
     elif current_state == EXPLORER_STATE:
         robot.disable_all_led()  # Turn off LED to indicate EXPLORER state
-        d = EXPLORER_WEIGHT  # Explorer weight
-        
+        WEIGHTS = EXPLORER_WEIGHTS
+        state_step_counter += 2  # Increase step counter faster in explorer to encourage quicker switching back to lover
+
         ds_left = (NORM_SPEED * prox_right) / PROX_TH
         ds_right = (NORM_SPEED * prox_left) / PROX_TH
         
@@ -100,7 +102,7 @@ while robot.go_on():
         # EXPLORER: Cross-coupling ==> avoidance
         if not (prev_prox_avg < PROX_TH
                 and abs(prox_avg - prev_prox_avg) < EQUILIBRIUM_TH
-                and state_step_counter > STATE_STEPS_TH):               
+                and state_step_counter > STATE_STEPS_TH):
             robot.set_speed(left_speed, right_speed)
         else:
             robot.set_speed(0)
@@ -117,6 +119,7 @@ while robot.go_on():
             robot.enable_all_led()  
 
         robot.set_speed(0)
+        WEIGHTS = [0]*4
 
         if state_step_counter > STATE_STEPS_TH:
             print(f"STABLE EQUILIBRIUM maintained! Terminating...")
