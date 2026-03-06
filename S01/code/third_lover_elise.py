@@ -1,6 +1,5 @@
 # Love at third time: AFSM that switches between LOVER and EXPLORER behaviors 3 times before settling in equilibrium
 from unifr_api_epuck import wrapper
-import time
 import numpy as np
 
 MY_IP = '192.168.2.205'  # change robot number
