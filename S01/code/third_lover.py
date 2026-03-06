@@ -7,7 +7,7 @@ robot = wrapper.get_robot(MY_IP)
 
 # Behavior parameters for tuning robotic "love" and "exploration" dynamics
 NORM_SPEED = 1.5 + 0.5      # Base speed for movement; can be increased for more dynamic behavior  
-PROX_TH = 300/2             # Reduce threshold to make it more reactive to obstacles              
+PROX_TH = 250/2             # Reduce threshold to make it more reactive to obstacles              
 STATE_STEPS_TH = 300        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
 EQUILIBRIUM_TH = 15         # Threshold for considering proximity values as "stable" for equilibrium detection
 SMOOTHING_WINDOW_SIZE = 20  # Number of recent proximity values to average for smoothing
@@ -45,7 +45,7 @@ while robot.go_on():
 
     prox_avg = (prox_right + prox_left) / 2
     
-    # Updating sliding window and trim to last 10 values
+    # Updating sliding window and trim window using SMOOTHING_WINDOW_SIZE
     prox_array.append(prox_avg)
     if len(prox_array) > SMOOTHING_WINDOW_SIZE:
         prox_array = prox_array[-SMOOTHING_WINDOW_SIZE:]
@@ -71,17 +71,15 @@ while robot.go_on():
             robot.set_speed(left_speed, right_speed)
         else:
             robot.set_speed(0)
-            
-# potentially put state_step_counter comparison here to ensure it stayed in this state long enough before confirming love
-            
+                        
             obstacle_counter += 1
             print(f"LOVE reached! Obstacle #{obstacle_counter} at prox: {prox_avg}")
                 
             if obstacle_counter >= 3:
                 current_state = EQUILIBRIUM_STATE
-                print("EQUILIBRIUM reached!")
+                print("EQUILIBRIUM reached!")     
                 
-                state_step_counter = STATE_STEPS_TH / 2  # Start counting steps for equilibrium stability check
+                state_step_counter = 0  # Reset step counter for new state           
             else:
                 current_state = EXPLORER_STATE
                 print("EXPLORER activated!")
@@ -117,10 +115,10 @@ while robot.go_on():
             robot.disable_all_led()  
         else:
             robot.enable_all_led()  
-
+            
         robot.set_speed(0)
-        WEIGHTS = [0]*4
-
+        state_step_counter += 3
+        
         if state_step_counter > STATE_STEPS_TH:
             print(f"STABLE EQUILIBRIUM maintained! Terminating...")
             break  # Exit loop and end program after confirming stable equilibrium
