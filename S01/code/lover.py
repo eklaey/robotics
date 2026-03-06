@@ -6,13 +6,11 @@ robot = wrapper.get_robot(MY_IP)
 
 NORM_SPEED = 1.5
 PROX_TH = 250
-PROX_TH /= 4  # Reduce threshold to make it more reactive to obstacles
+PROX_TH /= 2  # Reduce threshold to make it more reactive to obstacles
 
 # Weights for weighted proximity calculation - can be tuned for different behaviors (comment/uncomment)
-# a, b, c, d = 1, 1, 1, 1        # Equal weights for all sensors
-# a, b, c, d = 2, 1, 1, 0.5     # More weight to front sensors...
-# a, b, c, d = 0.5, 1, 1, 2     # More weight to rear sensors...
-a, b, c, d = 1, 1.5, 2, 4
+# a, b, c, d = 1, 1, 1, 1   # Equal weights for all sensors
+a, b, c, d = 1, 1.5, 2, 4   # More weight to side and rear sensors (sharper rotation towards loved objects)
 
 robot.init_sensors()
 robot.calibrate_prox()  
