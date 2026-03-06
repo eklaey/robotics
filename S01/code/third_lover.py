@@ -2,20 +2,20 @@
 from unifr_api_epuck import wrapper
 import numpy as np
 
-MY_IP = '192.168.2.205'     # REMEMBER: change last IP number to ROBOT number
+MY_IP = '192.168.2.202'     # REMEMBER: change last IP number to ROBOT number
 robot = wrapper.get_robot(MY_IP)    
 
 # Behavior parameters for tuning robotic "love" and "exploration" dynamics
-NORM_SPEED = 1.5   
+NORM_SPEED = 1.5 + 0.5  # Base speed for movement; can be increased for more dynamic behavior  
 PROX_TH = 250/2         # Reduce threshold to make it more reactive to obstacles              
 STATE_STEPS_TH = 500        # Minimum steps to stay in a state before switching (robust prevention of rapid oscillation)
-EQUILIBRIUM_TH = 10         # Threshold for considering proximity values as "stable" for equilibrium detection
-SMOOTHING_WINDOW_SIZE = 25  # Number of recent proximity values to average for smoothing
+EQUILIBRIUM_TH = 15         # Threshold for considering proximity values as "stable" for equilibrium detection
+SMOOTHING_WINDOW_SIZE = 20  # Number of recent proximity values to average for smoothing
 
 # Weights for weighted proximity calculation (taken from lover.py and explorer.py from testing)
 a, b, c = 1, 2, 4  # Base weights for front, side, and rear sensors
 LOVER_WEIGHT = 4  # Additional weight for lover behavior (positive to attract)
-EXPLORER_WEIGHT = -4  # Additional weight for explorer behavior (negative to repel)
+EXPLORER_WEIGHT = -2  # Additional weight for explorer behavior (negative to repel)
 
 # State definitions
 LOVER_STATE = "LOVER"
@@ -58,15 +58,16 @@ while robot.go_on():
         robot.enable_all_led()  # Turn on LED on to indicate LOVER state
         d = LOVER_WEIGHT  # Lover weight
         
+        ds_left = (NORM_SPEED * prox_left) / PROX_TH
+        ds_right = (NORM_SPEED * prox_right) / PROX_TH
+        
+        left_speed = NORM_SPEED - ds_left
+        right_speed = NORM_SPEED - ds_right
+        
         # LOVER: Parallel-coupling ==> attraction
-        if not (prev_prox_avg > PROX_TH and 
-                abs(prox_avg - prev_prox_avg) < EQUILIBRIUM_TH and
-                state_step_counter > STATE_STEPS_TH):  
-            ds_left = (NORM_SPEED * prox_left) / PROX_TH
-            ds_right = (NORM_SPEED * prox_right) / PROX_TH
-            
-            left_speed = NORM_SPEED - ds_left
-            right_speed = NORM_SPEED - ds_right
+        if not (prev_prox_avg > PROX_TH 
+                and abs(prox_avg - prev_prox_avg) < EQUILIBRIUM_TH
+                and state_step_counter > STATE_STEPS_TH):  
             
             robot.set_speed(left_speed, right_speed)
         else:
@@ -90,16 +91,16 @@ while robot.go_on():
         robot.disable_all_led()  # Turn off LED to indicate EXPLORER state
         d = EXPLORER_WEIGHT  # Explorer weight
         
+        ds_left = (NORM_SPEED * prox_right) / PROX_TH
+        ds_right = (NORM_SPEED * prox_left) / PROX_TH
+        
+        left_speed = NORM_SPEED - ds_left
+        right_speed = NORM_SPEED - ds_right
+        
         # EXPLORER: Cross-coupling ==> avoidance
-        if not (prev_prox_avg < PROX_TH and 
-                abs(prox_avg - prev_prox_avg) < EQUILIBRIUM_TH and
-                state_step_counter > STATE_STEPS_TH):
-            ds_left = (NORM_SPEED * prox_right) / PROX_TH
-            ds_right = (NORM_SPEED * prox_left) / PROX_TH
-            
-            left_speed = NORM_SPEED - ds_left
-            right_speed = NORM_SPEED - ds_right
-            
+        if not (prev_prox_avg < PROX_TH
+                and abs(prox_avg - prev_prox_avg) < EQUILIBRIUM_TH
+                and state_step_counter > STATE_STEPS_TH):               
             robot.set_speed(left_speed, right_speed)
         else:
             robot.set_speed(0)
