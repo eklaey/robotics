@@ -10,7 +10,7 @@ robot = wrapper.get_robot(MY_IP)
 robot.init_ground()
 
 # Open file for writing
-data = open("Gsensors.csv", "w")
+data = open("../recordings/Gsensors.csv", "w")
 
 if data == None:
     print('Error opening data file!\n')
@@ -31,8 +31,7 @@ for step in range(MAX_STEPS):
     if not robot.go_on():
         break
     
-    # --- MOVEMENT COMMAND ---
-    # Set a slow constant speed (2 rad/s) to get high-resolution data
+    # Set a slow constant speed to peak-valley data
     robot.set_speed(2, 2) 
     
     # Read ground sensors
@@ -47,5 +46,5 @@ for step in range(MAX_STEPS):
 # STOP the robot after the loop finishes
 robot.set_speed(0, 0)
 data.close()
-robot.clean_up() #
+robot.clean_up()
 print("Data collection complete. File saved as Gsensors.csv")

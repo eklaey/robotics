@@ -70,9 +70,9 @@ class PID:
 
 # open file for writing (adding a number if already exists)
 n = 0
-while os.path.exists("logPID_{}.csv".format(n)):
+while os.path.exists("../recordings/logPID_{}.csv".format(n)):
     n += 1
-data = open("logPID_{}.csv".format(n), "w")
+data = open("../recordings/logPID_{}.csv".format(n), "w")
 
 if data == None:
     print('Error opening data file!\n')
