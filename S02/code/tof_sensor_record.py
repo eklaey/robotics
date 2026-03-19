@@ -10,7 +10,7 @@ STOPPING_DISTANCE = 5
 robot = wrapper.get_robot(MY_IP)
 
 #open file for writing
-data = open("../recordings/TOFsensors.csv", "w")
+data = open("../recordings/sensors.csv", "w")
 
 if data == None:
     print('Error opening data file!\n')
@@ -19,11 +19,7 @@ if data == None:
 #write header in CSV file
 data.write('step,')
 data.write('tof,')
-data.write('accX,accY,accZ,')
-data.write('acc,incl,orient,')
-data.write('roll,pitch,')
-data.write('gyroX,gyroY,gyroZ,')
-data.write('mic0,mic1,mic2,mic3,')
+data.write('ps0,ps1,ps2,ps3,ps4,ps5,ps6,ps7')
 data.write('\n')
 
 # wait 3 seconds before starting
@@ -44,27 +40,14 @@ for step in range(MAX_STEPS):
     data.write(str(step)+',')
 
     data.write(str(robot.get_tof())+',')
-
-    xyz = robot.get_accelerometer_axes()
-    for v in xyz:
-        data.write(str(v)+',')
-
-    data.write(str(robot.get_acceleration())+',')
-    data.write(str(robot.get_inclination())+',')
-    data.write(str(robot.get_orientation())+',')
-    data.write(str(robot.get_roll())+',')
-    data.write(str(robot.get_pitch())+',')
-
-    gyro = robot.get_gyro_axes()
-    for g in gyro:
-        data.write(str(g)+',')
     
-    mic = robot.get_microphones()
-    for v in mic:
-        data.write(str(v)+',')
-
+    ps = robot.get_calibrate_prox()
+    for val in ps:
+        data.write(str(val)+',')
+  
     data.write('\n')
     
 robot.set_speed(0, 0)
 data.close()
 robot.clean_up()
+print("Data collection complete. File saved as sensors.csv")

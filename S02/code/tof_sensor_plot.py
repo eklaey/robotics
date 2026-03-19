@@ -6,26 +6,19 @@ import matplotlib.pyplot as plt
 # select data to plot
 columns = [
     'tof',
-#    'accX',
-#    'accY',
-#    'accZ',
-#    'acc',
-#    'incl',
-#    'orient',
-#    'roll',
-#    'pitch',
-#    'gyroX',
-#    'gyroY',
-#    'gyroZ',
-#    'mic0',
-#    'mic1',
-#    'mic2',
-#    'mic3',
+    'ps0',
+    'ps1',
+#    'ps2',
+#    'ps3',
+#    'ps4',
+#    'ps5',
+    'ps6',
+    'ps7',
     'placeholder' # here for ease of commenting in/out
      ]
 
 # get data from CSV file
-csv = pd.read_csv('../recordings/TOFsensors.csv', index_col=0)
+csv = pd.read_csv('../recordings/sensors.csv', index_col=0)
 
 # drop last empty column
 csv.drop(csv.columns[-1], axis=1, inplace = True)
