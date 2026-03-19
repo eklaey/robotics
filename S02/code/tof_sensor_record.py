@@ -22,8 +22,12 @@ data.write('tof,')
 data.write('ps0,ps1,ps2,ps3,ps4,ps5,ps6,ps7')
 data.write('\n')
 
-# wait 3 seconds before starting
-robot.sleep(3)
+# Sensor callibration before running test
+robot.init_sensors()
+robot.calibrate_prox()
+
+# wait 10 seconds before starting
+robot.sleep(10)
 
 for step in range(MAX_STEPS):
     robot.go_on()

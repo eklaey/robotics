@@ -16,26 +16,16 @@ signal.signal(signal.SIGINT, handler)
 # general parameters
 PID_MAX_DS = 1.5
 NORM_SPEED = 2
-PID_WALL_TARGET = 200
 PID_CORNER_TARGET = 200
 a = 4
 b = 2
 c = 1
 d = 0
-PID_CORNER_THRESHOLD = 500
 
 # PID parameters
-K = XXX
+K = 0.05    # starting value
 T_D = 0
 T_I = 9999999999  #optional
-
-# PID Straight Wall
-K_straight = 0.05
-T_D_straight = 0
-
-# PID Corner Wall
-K_corner = 0.05
-T_D_corner = 0
 
 class PID:
 
@@ -85,9 +75,6 @@ data.write('step,K,T_I,T_D,target,error,P,I,D,ds,left speed,right speed\n')
 # create pid instance
 pid = PID(K, T_I, T_D)
 
-pid_straight = PID(K_straight, T_I, T_D_straight)
-pid_corner = PID(K_corner, T_I, T_D_corner)
-
 step = 0
 
 robot.init_sensors()
@@ -99,17 +86,10 @@ robot.sleep(2)
 while robot.go_on():
     ps = robot.get_calibrate_prox()
     
-    # boolean switching between wall and corner pid
-    is_at_corner = ps[0] > PID_CORNER_THRESHOLD
-    if is_at_corner:
-        pid = pid_corner
-    else:
-        pid = pid_straight
-    
     proxR = (a * ps[0] + b * ps[1] + c * ps[2] + d * ps[3]) / (a+b+c+d);
                       
     # compute PID response according to IR sensor value
-    ds = pid.compute(proxR,PID_WALL_TARGET);      
+    ds = pid.compute(proxR,PID_CORNER_TARGET);      
           
     # make the robot turn towards the wall by default    
     ds += .05
@@ -125,7 +105,7 @@ while robot.go_on():
     robot.set_speed(speedL,speedR)
 
     # write a line of data in log file
-    data.write("{},{},{},{},{},{},{},{},{},{}\n".format(step, K, T_I, T_D, PID_WALL_TARGET, pid.error, pid.P(), pid.I(), pid.D(), ds, speedL,speedR))
+    data.write("{},{},{},{},{},{},{},{},{},{}\n".format(step, K, T_I, T_D, PID_CORNER_TARGET, pid.error, pid.P(), pid.I(), pid.D(), ds, speedL,speedR))
         
     step += 1
     
