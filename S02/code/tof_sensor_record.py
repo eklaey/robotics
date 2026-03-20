@@ -2,7 +2,8 @@
 from unifr_api_epuck import wrapper
 
 MY_IP = '192.168.2.208'
-MAX_STEPS = 500
+TURN_STEP = 160
+MAX_STEPS = 500 + TURN_STEP
 STATIONARY_STEPS = MAX_STEPS * 0.1
 
 STOPPING_DISTANCE = 1
@@ -36,9 +37,9 @@ for step in range(MAX_STEPS):
         # Measures baseline TOF rate at set distance
         robot.set_speed(0, 0)
     else:
-        # Measures TOF changes when robot approches wall
-        # at constant speed
-        robot.set_speed(2, 2)
+        # Measures TOF changes when robot approches wall at constant speed
+        # or when robot rotates counterclockwise 2x at constant speed
+        robot.set_speed(-2, 2)
     
     #write a line of data 
     data.write(str(step)+',')

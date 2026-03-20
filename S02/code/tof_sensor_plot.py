@@ -6,14 +6,14 @@ import matplotlib.pyplot as plt
 # select data to plot
 columns = [
     'tof',
-    'ps0',
+#    'ps0',
     'ps1',
 #    'ps2',
-#    'ps3',
-#    'ps4',
+    'ps3',
+    'ps4',
 #    'ps5',
     'ps6',
-    'ps7',
+#    'ps7',
     'placeholder' # here for ease of commenting in/out
      ]
 
@@ -30,12 +30,12 @@ csv = new_csv
 # plot single sensor one by one with subplots
 csv.plot(subplots=True)
 # save plot
-plt.savefig('additional_sensors_single.png')
+plt.savefig('../recordings/TOF_sensors_single.png')
 plt.show()
 
 # plot all sensors on single plot
 csv.plot()
 # set the legend on right corner
 plt.legend(loc='upper right')
-plt.savefig('additional_sensors.png')
+plt.savefig('../recordings/TOF_sensors.png')
 plt.show() 
