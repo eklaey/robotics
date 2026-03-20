@@ -18,7 +18,7 @@ columns = [
      ]
 
 # get data from CSV file
-csv = pd.read_csv('../recordings/sensors.csv', index_col=0)
+csv = pd.read_csv('../recordings/TOFsensors.csv', index_col=0)
 
 # drop last empty column
 csv.drop(csv.columns[-1], axis=1, inplace = True)

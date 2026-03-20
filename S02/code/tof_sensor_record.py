@@ -1,16 +1,16 @@
 # run the script to generate additional sensor data 
 from unifr_api_epuck import wrapper
 
-MY_IP = '172.20.10.14'
+MY_IP = '192.168.2.208'
 MAX_STEPS = 500
-STATIONARY_STEPS = 100
+STATIONARY_STEPS = MAX_STEPS * 0.1
 
-STOPPING_DISTANCE = 5
+STOPPING_DISTANCE = 1
 
 robot = wrapper.get_robot(MY_IP)
 
 #open file for writing
-data = open("../recordings/sensors.csv", "w")
+data = open("../recordings/TOFsensors.csv", "w")
 
 if data == None:
     print('Error opening data file!\n')
@@ -19,15 +19,15 @@ if data == None:
 #write header in CSV file
 data.write('step,')
 data.write('tof,')
-data.write('ps0,ps1,ps2,ps3,ps4,ps5,ps6,ps7')
+data.write('ps0,ps1,ps2,ps3,ps4,ps5,ps6,ps7,')
 data.write('\n')
 
 # Sensor callibration before running test
 robot.init_sensors()
 robot.calibrate_prox()
 
-# wait 10 seconds before starting
-robot.sleep(10)
+# wait 3 seconds before starting
+robot.sleep(3)
 
 for step in range(MAX_STEPS):
     robot.go_on()

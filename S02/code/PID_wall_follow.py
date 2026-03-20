@@ -5,7 +5,7 @@ import os # for log files
 
 import signal
 
-MY_IP = '192.168.43.153'
+MY_IP = '192.168.2.208'
 robot = wrapper.get_robot(MY_IP)
 
 def handler(signum, frame):
@@ -23,7 +23,7 @@ c = 1
 d = 0
 
 # PID parameters
-K = 0.05    # starting value
+K = 0.005    
 T_D = 0
 T_I = 9999999999  #optional
 
