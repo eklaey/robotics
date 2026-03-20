@@ -10,7 +10,7 @@ FILENAME='./logPID*'
 
 # use last
 file = sorted(glob.glob(FILENAME))[-1]
-file = './logPID_12.csv'
+file = './logPID_54.csv'
 print("using log file "+file)
 
 # get data from CSV file

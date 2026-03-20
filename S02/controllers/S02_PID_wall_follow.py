@@ -16,20 +16,20 @@ signal.signal(signal.SIGINT, handler)
 # general parameters
 PID_MAX_DS = 1.5
 NORM_SPEED = 2
-PID_WALL_TARGET = 200
-a = 1
+PID_WALL_TARGET = 250
+a = 2
 b = 2
-c = 2
+c = 1
 d = 0
 
 # PID parameters
+K = 0.0045
+T_D = 0.5
+
 # K = 0.0085
-# T_D = 0.001
+# T_D = 0
 
-K = 0.0085
-T_D = 0
-
-T_I = 9999999999  #optional
+T_I = 9999999  #optional
 
 
 class PID:
