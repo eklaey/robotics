@@ -5,14 +5,13 @@ import numpy as np
 MY_IP = '192.168.2.208'
 MAX_STEPS = 2000
 
-# Behavior parameters for tuning robotic "love" and "exploration" dynamics
-G_THRESHOLD = 700
-
-
-# Sensor definition
+# Sensor definition (in array returned by robot.get_ground())
 G_LEFT = 0
 G_MIDDLE = 1
 G_RIGHT = 2
+
+# Threshold to determine wether a sensor is on or off the line
+G_THRESHOLD = 700
 
 # Check if sensor is on the line
 def on_line(gs):
@@ -26,18 +25,15 @@ def on_line(gs):
 SPEED = 1.5
 
 # Initialize robot
-# robot.init_sensors() 
 robot = wrapper.get_robot(MY_IP)
 robot.init_ground()
 robot.sleep(5)
-
 
 
 for step in range(MAX_STEPS):
     robot.go_on()
     gs = robot.get_ground()
 
-    #match [on_line(ma_left_k), on_line(ma_middle_k), on_line(ma_right_k)]: # using moving average
     match [on_line(gs[G_LEFT]), on_line(gs[G_MIDDLE]), on_line(gs[G_RIGHT])]:
         case [1, 1, 0]: # correct, go straight
             print("1 1 0 -> straight")
@@ -51,8 +47,8 @@ for step in range(MAX_STEPS):
         case [0, 1, 1] | [0, 0, 1]: # must turn right
             print("0 * 1 -> right")
             speed_left, speed_right = SPEED, 0
-        case _: # by default, go straight
-            print("default -> stop")
+        case _: # by default, go left
+            print("default -> left")
             speed_left, speed_right = 0, SPEED
 
     robot.set_speed(speed_left, speed_right)
