@@ -2,6 +2,13 @@ from unifr_api_epuck import wrapper
 import sys, random, signal
 import numpy as np
 
+# on terminal : 
+# conda activate robotics
+# python3 -m unifr_api_epuck -g
+# python S03_detecting_eplorer.py 192.168.2.207
+# or to run multiple : 
+# ./run_multiple.sh 204 207
+
 if __name__ == "__main__":
     """
     if arguments in the command line --> IRL
@@ -29,9 +36,12 @@ if __name__ == "__main__":
     
     stepcounter = 0
     n = 10
+
+    # initialize client communication (server needs to be started)
+    robot.init_client_communication()
     
     while robot.go_on():
-    
+        detection_msg = ''
         if stepcounter % n == 0 :
             robot.init_camera()
         if stepcounter % n == 1 :
@@ -40,8 +50,24 @@ if __name__ == "__main__":
             if len(detections) > 0:
                 for object in detections:
                     print(object.label)
+                    detection_msg = detection_msg + " " + object.label
+            #version with color detection ? but to detect number of objects color doesn't help ?        
             #robot.disable_camera() # BUG !! will be working soon...
-    
+        
+        print("Current Detection : " + detection_msg)
+        robot.send_msg(detection_msg)
+        if robot.has_receive_msg():
+            received_msg = robot.receive_msg()
+            print("Received : " + received_msg)
+        
+        if received_msg == detection_msg:
+            robot.enable_all_led()
+        else:
+            robot.disable_all_led()
+
+        # get how many robots connected to the server14
+        n_robots = robot.get_connected_epucks()
+
         stepcounter += 1
             
         # get IR sensor values
