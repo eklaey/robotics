@@ -8,7 +8,7 @@ try:
 except OSError as error: 
     print(error)  
 
-MY_IP = '192.168.43.153'
+MY_IP = '192.168.2.206'
 robot = wrapper.get_robot(MY_IP)
 
 N_SAMPLES = 10

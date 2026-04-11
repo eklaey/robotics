@@ -7,7 +7,7 @@
 #prog=$(ls ./*.py| head -1)
 
 # use specific file
-prog='S03_detecting_explorer'
+prog='S03_detecting_explorer.py'
 
 echo $prog
 
