@@ -10,7 +10,7 @@ try:
 except OSError as error: 
     print(error) 
 
-MY_IP = '172.20.10.14'
+MY_IP = '192.168.2.202'
 MAX_STEPS = 200
 
 robot = wrapper.get_robot(MY_IP)
@@ -36,7 +36,6 @@ if colordata == None:
 
 #write header in CSV file
 colordata.write('step,x_center,y_center,width,height,area,label,time\n')
-
 
 # wait 3 seconds before starting
 robot.sleep(3)
