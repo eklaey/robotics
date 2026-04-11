@@ -1,10 +1,13 @@
 #!/bin/bash
 
 # for .py with same name as folder
-prog=`basename "$PWD"`.py
+# prog=`basename "$PWD"`.py
 
 # for first .py in folder
 #prog=$(ls ./*.py| head -1)
+
+# use specific file
+prog='S03_detecting_explorer'
 
 echo $prog
 
