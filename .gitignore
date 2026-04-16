@@ -7,3 +7,9 @@ Thumbs.db
 
 # Git specific files
 .git/credentials
+
+# Python specific files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
