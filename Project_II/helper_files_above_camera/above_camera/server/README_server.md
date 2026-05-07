@@ -20,7 +20,7 @@ p: 1203Video&
 
     rtsp://192.168.2.150:8554/cam2
 
-4. Test the streaming using the python code client.py (if you haven't done the calibration step below the code issues a warning)
+4. Test the streaming using the python code client.py (if you haven't done the calibration step below the code issues a warning) 
 
 If things do not work as expected, modify the mediamtx.yml config file (scroll to the bottom)
 
