@@ -10,7 +10,7 @@ def main():
 
     ip_address = sys.argv[1]
     marker_size = float(sys.argv[2]) if len(sys.argv) > 2 else 50.0
-    rtsp_url = f"rtsp://{ip_address}:8554/cam2"
+    rtsp_url = f"rtsp://{ip_address}:8554/cam1"
 
     print(f"Connecting to {rtsp_url}...")
     

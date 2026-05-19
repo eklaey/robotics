@@ -30,7 +30,7 @@ except Exception as e:
 
 ###################### Robot setup #################################################
 #IP
-MY_IP = '192.168.2.208' 
+MY_IP = '192.168.2.210' 
 ''
 r = wrapper.get_robot(MY_IP)
 
@@ -38,7 +38,7 @@ r = wrapper.get_robot(MY_IP)
 
 
 ###################### CONSTANTS & VARIABLES for behavior ####################################################
-MARKER_ID = 0 
+MARKER_ID = 10
 
 
 
@@ -94,7 +94,7 @@ while r.go_on():
             ty = t_wm[1]
                         
             # Convert rvec to rotation matrix
-            R_cm, _ = cv2.Rodrigues(markers[0]['rvec'])
+            R_cm, _ = cv2.Rodrigues(markers[MARKER_ID]['rvec'])
 
             # Marker rotation in world frame
             R_wm = R_wc @ R_cm

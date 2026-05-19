@@ -39,7 +39,9 @@ class ArUcoCamera:
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
 
         # Video Capture
-        self.cap = cv2.VideoCapture(self.rtsp_url)
+        #self.cap = cv2.VideoCapture(self.rtsp_url)
+        self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) # Keep only latest frame ==> prevents async_lock failed
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video stream: {self.rtsp_url}")
             

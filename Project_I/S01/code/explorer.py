@@ -1,7 +1,7 @@
 # Explorer implementation - Braitenberg vehicle with cross-coupled motors
 from unifr_api_epuck import wrapper
 
-MY_IP = '192.168.2.205'  # change robot number
+MY_IP = '192.168.2.210'  # change robot number
 robot = wrapper.get_robot(MY_IP)
 
 NORM_SPEED = 1.5
@@ -10,7 +10,7 @@ PROX_TH /= 2  # Reduce threshold to make it more reactive to obstacles
 
 # Weights for weighted proximity calculation - can be tuned for different behaviors (comment/uncomment)
 # a, b, c, d = 1, 1, 1, 1   # Equal weights for all sensors
-a, b, c, d = 1, 1.5, 2, -2  # More weight to side sensors and negative weight to rear sensors to encourage exploration
+a, b, c, d = 1, 1.5, 2, -1  # More weight to side sensors and negative weight to rear sensors to encourage exploration
 
 robot.init_sensors()
 robot.calibrate_prox()
