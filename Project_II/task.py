@@ -1,7 +1,10 @@
 from unifr_api_epuck import wrapper
-import cv2
+
 from vision import ArUcoCamera
 from threaded_camera import ThreadedCamera
+from pid import PID
+
+import cv2
 import numpy as np
 import math
 import matplotlib.pyplot as plt
@@ -9,7 +12,7 @@ import time
 import sys
 
 ############# initialize tracking (camera streaming) ###################
-rtsp_url = f"rtsp://192.168.2.150:8554/cam1"
+rtsp_url = f"rtsp://192.168.2.150:8554/cam2"
 print(f"Connecting to {rtsp_url}...")
 try:
     camera = ArUcoCamera(rtsp_url, marker_size_mm=40)
@@ -28,18 +31,17 @@ yaw = None
 
 frame = None
 markers = None
-
-
-# last pose
 last_tx, last_ty, last_yaw = None, None, None
 
 frame_count = 0
 
 ###################### Robot setup #####################################
-MY_IP = '192.168.2.210' # Robot IP to be change accordingly to the used one
+########################################################################
+MY_IP = '192.168.2.202' # Robot IP to be change accordingly to the used one
 r = wrapper.get_robot(MY_IP)
 
-################# variables ################
+####################### variables ######################################
+
 MARKER_ID = 10    # ArUco marker ID to be change accordingly to the used one
 
 NORM_SPEED = 1.5
@@ -54,10 +56,29 @@ last_resync = 0
 has_not_resync = True
 resync_start_time = None
 RESYNC_DURATION = 7.0
+RECALIBRATION_TIMEOUT = 30
 
 # Braitenberg EXPLORER
 PROX_TH = 125
-a, b, c, d = 1, 2, 2, -1
+ea, eb, ec, ed = 1, 2, 2, -1
+
+# PID Parameters for Wall Following
+PID_MAX_DS = 1.5
+PID_WALL_TARGET = 200
+wa, wb, wc, wd = 4, 2, 1, 0
+
+K = 0.005    
+T_D = 0
+T_I = 9999999999
+
+# Instantiate the PID controller
+wall_pid = PID(K, T_I, T_D)
+
+# Behavior tracking variables
+resync_interruption_start = None
+
+wall_follow_start_time = None
+WALL_FOLLOW_DURATION = 30.0  # Time in seconds to follow a single block before breaking away
 
 
 ###### simple state machine having basic and resync behaviors ##########
@@ -123,22 +144,35 @@ def set_cell_if_empty(grid, x, y, value):
         if grid[y, x] == 0:
             grid[y, x] = value
 ###################### MAP PREPARATION #####################################
-tx, ty, yaw = update_pose()
-if tx is not None and ty is not None and yaw is not None :  #define borders of the map
-    x_min = tx - 0.45
-    x_max = tx + 0.45
-    y_min = ty - 0.30
-    y_max = ty + 0.30
+print("Waiting for valid ArUco pose to initialize map...")
+tx, ty, yaw = None, None, None
+init_map_start_time = time.time()
+
+# Keep trying to get a pose until successful (max 15 seconds)
+while tx is None or ty is None:
+    if time.time() - init_map_start_time > 15:
+        print("Timeout: Could not find ArUco marker within 30 seconds. Terminating program.")
+        sys.exit(1)
+
+    tx, ty, yaw = update_pose()
+    if tx is None:
+        time.sleep(0.1) # Wait slightly for the camera thread to catch up
+
+# Now that we have a real position, define borders
+x_min = tx - 0.45
+x_max = tx + 0.45
+y_min = ty - 0.30
+y_max = ty + 0.30
+
 # create grid map
 nx = int((x_max - x_min) / resolution)
 ny = int((y_max - y_min) / resolution)
 grid = np.zeros((ny, nx))
-print("map made", "x_max", x_max, "x_min", x_min)
+print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}")
 
 ###################### SENSOR CALIBRATION ###################################
 r.init_sensors()
 r.calibrate_prox()
-
 
 #############################################################################
 ######################## GO_ON LOOP #########################################
@@ -147,8 +181,7 @@ while r.go_on():
     ################## PRE-PROCESSING FOR CAMERA AND MAP ####################
     # Get tracking info from camera for safeguard check
     frame, markers = threaded_cam.get_marker_positions()
-    if frame is None or frame.size == 0:
-        print("Warning: Received empty or invalid frame due to network interference. Skipping this iteration...")
+    if frame is None or frame.size == 0 :
         time.sleep(0.01)  # Small pause to let the network buffer catch up
         continue          # Skip the rest of the loop and try getting a fresh frame
 
@@ -188,31 +221,20 @@ while r.go_on():
     ############## robot explores and recalibrates the position ############
     if state == BASE:
 
-        if time.time() - last_resync > 19: # recalibration timeout value in seconds
+        if time.time() - last_resync > RECALIBRATION_TIMEOUT:
             state = RE_SYNC
             r.set_speed(0, 0)
             last_resync = time.time()
+            
+            # If we were wall following, note down when the interruption started 
+            if mode == WALL_FOLLOWER and wall_follow_start_time is not None:
+                resync_interruption_start = time.time()
+            
             continue
-
-        # --- 1. EXPLORER PARADIGM (Obstacle Avoidance) ---
-        prox_values = r.get_calibrate_prox()
         
-        # Calculate weighted average for right and left sensors
-        prox_right = (a * prox_values[0] + b * prox_values[1] + c * prox_values[2] + d * prox_values[3]) / (a + b + c + d)
-        prox_left = (a * prox_values[7] + b * prox_values[6] + c * prox_values[5] + d * prox_values[4]) / (a + b + c + d)
-        
-        # Calculate delta speeds using Braitenberg formula: ds = -(prox/prox_th) * s0
-        ds_left = (NORM_SPEED * prox_right) / PROX_TH   # Right sensor controls left motor (cross-coupled)
-        ds_right = (NORM_SPEED * prox_left) / PROX_TH   # Left sensor controls right motor (cross-coupled)
-        
-        # Calculate individual motor speeds: s = s0 + ds
-        left_speed = NORM_SPEED - ds_left
-        right_speed = NORM_SPEED - ds_right
-        
-        r.set_speed(left_speed, right_speed)
-
-
-        # --- 2. VIRTUAL GEOFENCE (Boundary Management) ---
+        # -------------------------------------------------------------
+        # --- PRIORITY: VIRTUAL GEOFENCE (Boundary Management) --------
+        # -------------------------------------------------------------
         in_danger_zone = False
 
         if tx is not None and ty is not None and yaw is not None:
@@ -248,8 +270,73 @@ while r.go_on():
                 left_speed = max(min(left_speed, 5), -5)
                 right_speed = max(min(right_speed, 5), -5)
 
-        # --- 3. APPLY SPEEDS (Priority Logic) ---
         if in_danger_zone:
+            r.set_speed(left_speed, right_speed)
+            continue
+
+        # -------------------------------------------------------------
+        # --- MODE: EXPLORER MODE (Wandering Open Space) --------------
+        # -------------------------------------------------------------
+        if mode == EXPLORER:
+            prox_values = r.get_calibrate_prox()
+            
+            # If front sensors detect a block nearby, transition to wall following!
+            # Using front sensors (ps[0] and ps[7]) exceeding a activation threshold
+            if prox_values[0] > 100 or prox_values[7] > 100:
+                print("Obstacle detected! Initiating PID Wall Follower...")
+                mode = WALL_FOLLOWER
+                wall_follow_start_time = time.time()
+                # Clear PID memory
+                wall_pid.error = 0
+                wall_pid.integ = 0
+                continue
+
+            # Braitenberg exploration weighted average sensor calculations
+            prox_right = (ea * prox_values[0] + eb * prox_values[1] + ec * prox_values[2] + ed * prox_values[3]) / (ea + eb + ec + ed)
+            prox_left = (ea * prox_values[7] + eb * prox_values[6] + ec * prox_values[5] + ed * prox_values[4]) / (ea + eb + ec + ed)
+            
+            ds_left = (NORM_SPEED * prox_right) / PROX_TH   
+            ds_right = (NORM_SPEED * prox_left) / PROX_TH  
+             
+            # Calculate individual motor speeds: s = s0 + ds
+            left_speed = NORM_SPEED - ds_left
+            right_speed = NORM_SPEED - ds_right
+            
+            r.set_speed(left_speed, right_speed)
+            
+        # -------------------------------------------------------------
+        # --- MODE: WALL_FOLLOWER MODE (Circumnavigating Obstacles) ---
+        # -------------------------------------------------------------
+        elif mode == WALL_FOLLOWER:
+            # Safety timeout: Check if we have spent enough time mapping this block
+            if time.time() - wall_follow_start_time > WALL_FOLLOW_DURATION:
+                print("Circumnavigation complete. Resuming Explorer mode...")
+                mode = EXPLORER
+                continue
+
+            prox_values = r.get_calibrate_prox()
+            
+            # Read right sensors for PID target (tracking the wall on the robot's right)
+            proxR = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
+            
+            # Compute PID response
+            ds = wall_pid.compute(proxR, PID_WALL_TARGET)
+            ds += 0.05 # default bias to curve slightly toward the wall
+            
+            right_speed = NORM_SPEED + ds
+            left_speed = NORM_SPEED - ds
+            
+            # Clamping behavior for sharp cornering
+            if abs(ds) > PID_MAX_DS:
+                right_speed = +ds
+                left_speed = -ds
+                
+            # # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
+            # if max(prox_values) < 30:
+            #     print("Lost wall contact. Returning to Explorer...")
+            #     mode = EXPLORER
+            #     continue
+
             r.set_speed(left_speed, right_speed)
             
 
@@ -271,8 +358,16 @@ while r.go_on():
             time.sleep(0.02)
 
         tx, ty, yaw = update_pose()
-
         print("Re-sync complete:", tx, ty, yaw)
+        
+        # Adjust the wall following clock if it was interrupted
+        if mode == WALL_FOLLOWER and wall_follow_start_time is not None and resync_interruption_start is not None:
+            interruption_duration = time.time() - resync_interruption_start
+            # Shift the start time forward, effectively "freezing" the countdown during resync
+            wall_follow_start_time += interruption_duration
+            resync_interruption_start = None # Reset tracker
+            print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
+
         resync_start_time = None
         state = BASE
         continue
