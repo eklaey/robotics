@@ -28,5 +28,5 @@ class ThreadedCamera:
         with self.lock:
             return self.frame, self.markers
 
-# Usage in script:
+# Usage in task/challenge script:
 # threaded_cam = ThreadedCamera(camera)

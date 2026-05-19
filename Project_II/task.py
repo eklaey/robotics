@@ -1,7 +1,7 @@
 from unifr_api_epuck import wrapper
 import cv2
 from vision import ArUcoCamera
-from thread_camera import ThreadedCamera
+from threaded_camera import ThreadedCamera
 import numpy as np
 import math
 import matplotlib.pyplot as plt
@@ -122,7 +122,7 @@ def set_cell_if_empty(grid, x, y, value):
     if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
         if grid[y, x] == 0:
             grid[y, x] = value
-###################### MAP PREPARATION #########################################
+###################### MAP PREPARATION #####################################
 tx, ty, yaw = update_pose()
 if tx is not None and ty is not None and yaw is not None :  #define borders of the map
     x_min = tx - 0.45
@@ -135,16 +135,16 @@ ny = int((y_max - y_min) / resolution)
 grid = np.zeros((ny, nx))
 print("map made", "x_max", x_max, "x_min", x_min)
 
-###################### SENSOR CALIBRATION ########################################
+###################### SENSOR CALIBRATION ###################################
 r.init_sensors()
 r.calibrate_prox()
 
 
-########################################################################################
-######################## GO_ON LOOP ####################################################
+#############################################################################
+######################## GO_ON LOOP #########################################
 while r.go_on():
 
-    #################### PRE-PROCESSING FOR CAMERA AND MAP###########################
+    ################## PRE-PROCESSING FOR CAMERA AND MAP ####################
     # Get tracking info from camera for safeguard check
     frame, markers = threaded_cam.get_marker_positions()
     if frame is None or frame.size == 0:
@@ -185,7 +185,7 @@ while r.go_on():
             set_cell_if_empty(grid, ix, iy, 1)
 
 
-    ############## robot explores and recalibrates the position ##########################
+    ############## robot explores and recalibrates the position ############
     if state == BASE:
 
         if time.time() - last_resync > 19: # recalibration timeout value in seconds
@@ -212,34 +212,45 @@ while r.go_on():
         r.set_speed(left_speed, right_speed)
 
 
-        # # --- 2. VIRTUAL GEOFENCE (Imaginary Boundary) ---
-        # # Set boundary limit in meters
-        # BUFFER = 0.05 # Stay slightly inside the map edges
+        # --- 2. VIRTUAL GEOFENCE (Boundary Management) ---
+        in_danger_zone = False
 
-        # if tx is not None and ty is not None and yaw is not None:
-        #     # Check if robot is outside the rectangular map boundaries
-        #     if tx < (x_min + BUFFER) or tx > (x_max - BUFFER) or \
-        #     ty < (y_min + BUFFER) or ty > (y_max - BUFFER):
-                
-        #         # Calculate the angle required to face the origin (or map center)
-        #         # Assuming center is (x_min + x_max)/2, (y_min + y_max)/2
-        #         cx, cy = (x_min + x_max)/2, (y_min + y_max)/2
-        #         target_angle = math.atan2(cy - ty, cx - tx)
-                
-        #         # Calculate difference between current heading and target heading
-        #         error = yaw - target_angle
-                
-        #         # Normalize the error to be between -pi and pi
-        #         while error < -math.pi: error += 2 * math.pi
-        #         while error > math.pi: error -= 2 * math.pi
-                
-        #         # Apply proportional steering logic adapted from the circular_path template
-        #         # Proportional gain (2.5) helps the robot turn back sharply
-        #         ds = 2.5 * error
-        #         left_speed = NORM_SPEED + ds
-        #         right_speed = NORM_SPEED - ds
+        if tx is not None and ty is not None and yaw is not None:
+            # Check boundaries
+            out_left = tx < (x_min)
+            out_right = tx > (x_max)
+            out_bottom = ty < (y_min)
+            out_top = ty > (y_max)
 
-        # r.set_speed(left_speed, right_speed)
+            if out_left or out_right or out_bottom or out_top:
+                in_danger_zone = True
+                
+                # Calculate center of the map
+                cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+                
+                # Angle to face the center
+                target_angle = math.atan2(cy - ty, cx - tx)
+                
+                # Calculate steering error
+                angle_error = target_angle - yaw
+                
+                # Normalize angle to [-pi, pi]
+                angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
+                
+                # Sharp proportional turn
+                Kp = 1.0 
+                ds = Kp * angle_error
+                
+                left_speed = NORM_SPEED - ds
+                right_speed = NORM_SPEED + ds
+                
+                # Cap speeds
+                left_speed = max(min(left_speed, 5), -5)
+                right_speed = max(min(right_speed, 5), -5)
+
+        # --- 3. APPLY SPEEDS (Priority Logic) ---
+        if in_danger_zone:
+            r.set_speed(left_speed, right_speed)
             
 
     ########### RESYNC ############
