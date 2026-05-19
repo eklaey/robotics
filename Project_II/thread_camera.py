@@ -24,7 +24,7 @@ class ThreadedCamera:
                 self.markers = m
             time.sleep(0.01) # Small sleep to avoid CPU pinning
 
-    def get_latest(self):
+    def get_marker_positions(self):
         with self.lock:
             return self.frame, self.markers
 
