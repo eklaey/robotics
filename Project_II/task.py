@@ -40,7 +40,7 @@ frame_count = 0
 
 ###################### ROBOT SETUP #####################################
 ########################################################################
-MY_IP = '192.168.2.202' # Robot IP to be change accordingly to the used one
+MY_IP = '192.168.2.207' # Robot IP to be change accordingly to the used one
 r = wrapper.get_robot(MY_IP)
 
 ####################### variables ######################################
@@ -61,7 +61,8 @@ resync_start_time = None
 RESYNC_DURATION = 7.0
 RECALIBRATION_TIMEOUT = 19.0
 
-BUFFER = 0.05
+BUFFER = 0.1
+Kp = 0.5
 
 lost_wall_start_time = None
 LOST_WALL_TIMEOUT = 1.0 
@@ -76,9 +77,12 @@ PID_WALL_TARGET = 200
 wa, wb, wc, wd = 4, 2, 1, 0
 
 # older working values
+# DEFAULT_DS_OFFSET = 0.05
 # K = 0.0055   
 # T_D = 0.2
-K = 0.0085   
+
+DEFAULT_DS_OFFSET = 0.1
+K = 0.0085
 T_D = 0.3
 T_I = 9999999999
 
@@ -200,8 +204,8 @@ while tx is None or ty is None:
 # Now that we have a real position, define borders
 x_min = tx - 0.45
 x_max = tx + 0.45
-y_min = ty - 0.30
-y_max = ty + 0.30
+y_min = ty - 0.35
+y_max = ty + 0.35
 
 # create grid map
 nx = int((x_max - x_min) / resolution)
@@ -309,8 +313,7 @@ while r.go_on():
                 # Normalize angle to [-pi, pi]
                 angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
                 
-                k = 0.2
-                ds = k * angle_error
+                ds = Kp * angle_error
                 
                 left_speed = NORM_SPEED - ds
                 right_speed = NORM_SPEED + ds
@@ -323,11 +326,10 @@ while r.go_on():
         # --- MODE: EXPLORER MODE (Wandering Open Space) --------------
         # -------------------------------------------------------------
         if mode == EXPLORER:
-            #prox_values = r.get_calibrate_prox()
             prox_values = get_smoothed_prox()
             
-            if ((prox_values[0] + prox_values[6]) > WALL_DETECTION_THRESHOLD or 
-                (prox_values[7] + prox_values[1]) > WALL_DETECTION_THRESHOLD):
+            if ((prox_values[0] + prox_values[1]) > WALL_DETECTION_THRESHOLD or 
+                (prox_values[7] + prox_values[6]) > WALL_DETECTION_THRESHOLD - 50):
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
@@ -511,7 +513,7 @@ while r.go_on():
                 # Standard right-wall tracking
                 prox_side = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
                 ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
-                ds += 0.05 
+                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving 
                 
                 right_speed = NORM_SPEED + ds
                 left_speed = NORM_SPEED - ds
