@@ -4,10 +4,12 @@ from vision import ArUcoCamera
 from threaded_camera import ThreadedCamera
 from pid import PID
 
+import os
 import cv2
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import time
 import sys
 
@@ -35,7 +37,7 @@ last_tx, last_ty, last_yaw = None, None, None
 
 frame_count = 0
 
-###################### Robot setup #####################################
+###################### ROBOT SETUP #####################################
 ########################################################################
 MY_IP = '192.168.2.202' # Robot IP to be change accordingly to the used one
 r = wrapper.get_robot(MY_IP)
@@ -55,8 +57,9 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 7.0
-RECALIBRATION_TIMEOUT = 30
+RESYNC_DURATION = 3.0
+RECALIBRATION_TIMEOUT = 18.0
+BUFFER = 0.05
 
 # Braitenberg EXPLORER
 PROX_TH = 125
@@ -143,6 +146,18 @@ def set_cell_if_empty(grid, x, y, value):
     if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
         if grid[y, x] == 0:
             grid[y, x] = value
+            
+def map_block_in_front(tx, ty, yaw, block_type):
+    """ Projects 8cm forward from the robot's center and paints a 3x3 patch on the grid """
+    block_x = tx + 0.08 * math.cos(yaw)
+    block_y = ty + 0.08 * math.sin(yaw)
+    bx, by = world_to_grid(block_x, block_y)
+    
+    # Paint a 3x3 grid patch so it is highly visible on the map
+    for i in range(-1, 2):
+        for j in range(-1, 2):
+            if 0 <= bx+i < grid.shape[1] and 0 <= by+j < grid.shape[0]:
+                grid[by+j, bx+i] = block_type
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
 tx, ty, yaw = None, None, None
@@ -170,9 +185,16 @@ ny = int((y_max - y_min) / resolution)
 grid = np.zeros((ny, nx))
 print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}")
 
-###################### SENSOR CALIBRATION ###################################
+###################### SENSOR & CAMERA CALIBRATION ###################################
 r.init_sensors()
 r.calibrate_prox()
+r.initiate_model()
+os.makedirs("./img", exist_ok=True)
+r.init_camera("./img")
+
+# Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
+cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
+norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
 
 #############################################################################
 ######################## GO_ON LOOP #########################################
@@ -239,10 +261,10 @@ while r.go_on():
 
         if tx is not None and ty is not None and yaw is not None:
             # Check boundaries
-            out_left = tx < (x_min)
-            out_right = tx > (x_max)
-            out_bottom = ty < (y_min)
-            out_top = ty > (y_max)
+            out_left = tx < (x_min + BUFFER)
+            out_right = tx > (x_max - BUFFER)
+            out_bottom = ty < (y_min + BUFFER)
+            out_top = ty > (y_max - BUFFER)
 
             if out_left or out_right or out_bottom or out_top:
                 in_danger_zone = True
@@ -259,16 +281,11 @@ while r.go_on():
                 # Normalize angle to [-pi, pi]
                 angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
                 
-                # Sharp proportional turn
-                Kp = 1.0 
-                ds = Kp * angle_error
+                k = 0.2
+                ds = k * angle_error
                 
                 left_speed = NORM_SPEED - ds
                 right_speed = NORM_SPEED + ds
-                
-                # Cap speeds
-                left_speed = max(min(left_speed, 5), -5)
-                right_speed = max(min(right_speed, 5), -5)
 
         if in_danger_zone:
             r.set_speed(left_speed, right_speed)
@@ -331,11 +348,11 @@ while r.go_on():
                 right_speed = +ds
                 left_speed = -ds
                 
-            # # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
-            # if max(prox_values) < 30:
-            #     print("Lost wall contact. Returning to Explorer...")
-            #     mode = EXPLORER
-            #     continue
+            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
+            if max(prox_values) < 30:
+                print("Lost wall contact. Returning to Explorer...")
+                mode = EXPLORER
+                continue
 
             r.set_speed(left_speed, right_speed)
             
@@ -377,7 +394,7 @@ while r.go_on():
     
     if frame_count % 50 == 0:  # SHOWS updated map every 50 frames
         plt.clf()
-        plt.imshow(grid, origin='lower', cmap='gray')
+        plt.imshow(np.fliplr(grid), origin='upper', cmap='gray')
         plt.title("Map")
         plt.pause(0.001)
 
