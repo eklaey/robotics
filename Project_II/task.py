@@ -64,9 +64,6 @@ RECALIBRATION_TIMEOUT = 19.0
 BUFFER = 0.1
 Kp = 0.5
 
-lost_wall_start_time = None
-LOST_WALL_TIMEOUT = 1.0 
-
 # Braitenberg EXPLORER
 PROX_TH = 250
 ea, eb, ec, ed = 1, 2, 2, -1
@@ -94,8 +91,12 @@ resync_interruption_start = None
 
 WALL_DETECTION_THRESHOLD = 200
 wall_following_side = "RIGHT"
-wall_follow_start_time = None
-WALL_FOLLOW_DURATION = 25.0  # Time in seconds to follow a single block before breaking away
+wall_follow_start_time = 0
+WALL_FOLLOW_DURATION = 20.0
+lost_wall_start_time = 0
+LOST_WALL_TIMEOUT = 1.0 
+wall_exit_time = 0
+WALL_EXIT_TIMEOUT = 3.0
 
 
 ###### simple state machine having basic and resync behaviors ##########
@@ -327,9 +328,10 @@ while r.go_on():
         # -------------------------------------------------------------
         if mode == EXPLORER:
             prox_values = get_smoothed_prox()
-            
-            if ((prox_values[0] + prox_values[1]) > WALL_DETECTION_THRESHOLD or 
-                (prox_values[7] + prox_values[6]) > WALL_DETECTION_THRESHOLD - 50):
+                        
+            if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
+                (   (prox_values[0]) > WALL_DETECTION_THRESHOLD or 
+                    (prox_values[7]) > WALL_DETECTION_THRESHOLD)):
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
@@ -487,6 +489,7 @@ while r.go_on():
             if time.time() - wall_follow_start_time > WALL_FOLLOW_DURATION:
                 print("Circumnavigation complete. Resuming Explorer mode...")
                 mode = EXPLORER
+                wall_exit_time = time.time()
                 continue
             
             prox_values = get_smoothed_prox()
@@ -497,16 +500,16 @@ while r.go_on():
                 # mode = EXPLORER
                 # continue
                 if lost_wall_start_time is None:
-                    lost_wall_start_time = time.time() # Start the timer
+                    lost_wall_start_time = time.time()
                 
                 elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
                     print("Lost wall confirmed. Returning to Explorer...")
                     mode = EXPLORER
-                    lost_wall_start_time = None # Reset
+                    lost_wall_start_time = 0
                     continue
             else:
                 # Wall detected --> Reset the timer
-                lost_wall_start_time = None
+                lost_wall_start_time = 0
             
             # --- NEW: Bidirectional PID Computation ---
             if wall_following_side == "RIGHT":
@@ -562,14 +565,16 @@ while r.go_on():
         
         # Adjust the wall following clock if it was interrupted
         if (mode == WALL_FOLLOWER and 
-            (wall_follow_start_time is not None or lost_wall_start_time is not None) and 
+            (wall_follow_start_time != 0 or 
+             lost_wall_start_time != 0 or
+             wall_exit_time != 0) and 
             resync_interruption_start is not None):
             
             interruption_duration = time.time() - resync_interruption_start
             # Shift the start time forward, effectively "freezing" the countdown during resync
-            if wall_follow_start_time is not None:
+            if wall_follow_start_time != 0:
                 wall_follow_start_time += interruption_duration
-            elif lost_wall_start_time is not None:
+            elif lost_wall_start_time != 0:
                 lost_wall_start_time += interruption_duration
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
