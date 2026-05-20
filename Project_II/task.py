@@ -12,9 +12,10 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import time
 import sys
+from collections import deque
 
 ############# initialize tracking (camera streaming) ###################
-rtsp_url = f"rtsp://192.168.2.150:8554/cam2"
+rtsp_url = f"rtsp://192.168.2.150:8554/cam1"
 print(f"Connecting to {rtsp_url}...")
 try:
     camera = ArUcoCamera(rtsp_url, marker_size_mm=40)
@@ -44,7 +45,7 @@ r = wrapper.get_robot(MY_IP)
 
 ####################### variables ######################################
 
-MARKER_ID = 10    # ArUco marker ID to be change accordingly to the used one
+MARKER_ID = 19    # ArUco marker ID to be change accordingly to the used one
 
 NORM_SPEED = 1.5
 
@@ -57,12 +58,16 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 3.0
-RECALIBRATION_TIMEOUT = 18.0
+RESYNC_DURATION = 7.0
+RECALIBRATION_TIMEOUT = 19.0
+
 BUFFER = 0.05
 
+lost_wall_start_time = None
+LOST_WALL_TIMEOUT = 1.0 
+
 # Braitenberg EXPLORER
-PROX_TH = 125
+PROX_TH = 250
 ea, eb, ec, ed = 1, 2, 2, -1
 
 # PID Parameters for Wall Following
@@ -70,8 +75,11 @@ PID_MAX_DS = 1.5
 PID_WALL_TARGET = 200
 wa, wb, wc, wd = 4, 2, 1, 0
 
-K = 0.005    
-T_D = 0
+# older working values
+# K = 0.0055   
+# T_D = 0.2
+K = 0.0085   
+T_D = 0.3
 T_I = 9999999999
 
 # Instantiate the PID controller
@@ -80,8 +88,10 @@ wall_pid = PID(K, T_I, T_D)
 # Behavior tracking variables
 resync_interruption_start = None
 
+WALL_DETECTION_THRESHOLD = 200
+wall_following_side = "RIGHT"
 wall_follow_start_time = None
-WALL_FOLLOW_DURATION = 30.0  # Time in seconds to follow a single block before breaking away
+WALL_FOLLOW_DURATION = 25.0  # Time in seconds to follow a single block before breaking away
 
 
 ###### simple state machine having basic and resync behaviors ##########
@@ -146,7 +156,21 @@ def set_cell_if_empty(grid, x, y, value):
     if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
         if grid[y, x] == 0:
             grid[y, x] = value
-            
+
+def get_smoothed_prox():
+    """Fetches raw prox values, applies a moving average, and returns smoothed values."""
+    raw_values = r.get_calibrate_prox()
+    smoothed_values = []
+    
+    for i in range(8):
+        # Push the new raw reading into the queue for sensor 'i'
+        prox_history[i].append(raw_values[i])
+        
+        # Calculate the average of the window
+        avg_val = sum(prox_history[i]) / len(prox_history[i])
+        smoothed_values.append(avg_val)
+        
+    return smoothed_values
 def map_block_in_front(tx, ty, yaw, block_type):
     """ Projects 8cm forward from the robot's center and paints a 3x3 patch on the grid """
     block_x = tx + 0.08 * math.cos(yaw)
@@ -183,18 +207,22 @@ y_max = ty + 0.30
 nx = int((x_max - x_min) / resolution)
 ny = int((y_max - y_min) / resolution)
 grid = np.zeros((ny, nx))
-print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}")
+print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}]")
 
 ###################### SENSOR & CAMERA CALIBRATION ###################################
 r.init_sensors()
 r.calibrate_prox()
-r.initiate_model()
-os.makedirs("./img", exist_ok=True)
-r.init_camera("./img")
 
-# Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
-cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
-norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
+WINDOW_SIZE = 4    # Moving Average Filter Buffers
+prox_history = [deque(maxlen=WINDOW_SIZE) for _ in range(8)]
+
+# r.initiate_model()
+# os.makedirs("./img", exist_ok=True)
+# r.init_camera("./img")
+
+# # Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
+# cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
+# norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
 
 #############################################################################
 ######################## GO_ON LOOP #########################################
@@ -295,17 +323,27 @@ while r.go_on():
         # --- MODE: EXPLORER MODE (Wandering Open Space) --------------
         # -------------------------------------------------------------
         if mode == EXPLORER:
-            prox_values = r.get_calibrate_prox()
+            #prox_values = r.get_calibrate_prox()
+            prox_values = get_smoothed_prox()
             
-            # If front sensors detect a block nearby, transition to wall following!
-            # Using front sensors (ps[0] and ps[7]) exceeding a activation threshold
-            if prox_values[0] > 100 or prox_values[7] > 100:
+            if ((prox_values[0] + prox_values[6]) > WALL_DETECTION_THRESHOLD or 
+                (prox_values[7] + prox_values[1]) > WALL_DETECTION_THRESHOLD):
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
                 # Clear PID memory
                 wall_pid.error = 0
                 wall_pid.integ = 0
+                
+                # Compare front-left sensors vs front-right sensors
+                if prox_values[7] + prox_values[6] > prox_values[0] + prox_values[1]:
+                    wall_following_side = "LEFT"
+                else:
+                    wall_following_side = "RIGHT"
+                    
+                print(f"Following wall on the {wall_following_side} side.")
+                
+                r.set_speed(0, 0)
                 continue
 
             # Braitenberg exploration weighted average sensor calculations
@@ -320,6 +358,124 @@ while r.go_on():
             right_speed = NORM_SPEED - ds_right
             
             r.set_speed(left_speed, right_speed)
+        
+        # # -------------------------------------------------------------
+        # # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
+        # # -------------------------------------------------------------
+        # if mode == EXPLORER:
+        #     # # 1. Look for Colored Goals using the fast Color API
+        #     # img = np.array(r.get_camera())
+            
+        #     # Look for Colored Goals using faster Color API
+        #     raw_img = np.array(r.get_camera())
+            
+        #     # --- LETTERBOXING ---
+        #     height, width, _ = raw_img.shape
+            
+        #     # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
+        #     y_start = int(height * 0.30) 
+        #     y_end = int(height * 0.80)   
+            
+        #     # Slice the array: [y_start to y_end, all X, all channels]
+        #     img = raw_img[y_start:y_end, :]
+            
+        #     color_detections = r.get_colordetection(img)
+            
+        #     # Filter for Red and Green
+        #     target = None
+        #     target_color = None
+        #     if color_detections:
+        #         reds = [d for d in color_detections if d.label == "Red"]
+        #         greens = [d for d in color_detections if d.label == "Green"]
+                
+        #         # Pick the largest area detected
+        #         if reds and greens:
+        #             best_red = max(reds, key=lambda d: d.area)
+        #             best_green = max(greens, key=lambda d: d.area)
+        #             if best_red.area > best_green.area:
+        #                 target, target_color = best_red, 2 # 2 is Red in our map
+        #             else:
+        #                 target, target_color = best_green, 3 # 3 is Green in our map
+        #         elif reds:
+        #             target, target_color = max(reds, key=lambda d: d.area), 2
+        #         elif greens:
+        #             target, target_color = max(greens, key=lambda d: d.area), 3
+
+        #     # If a significant color blob is seen, switch to LOVER
+        #     if target is not None and target.area > 50:
+        #         print(f"Goal detected! Switching to LOVER mode ({target.label}).")
+        #         mode = LOVER
+        #         continue
+
+        #     # 2. Normal Braitenberg Explorer (If no color seen)
+        #     prox_values = r.get_calibrate_prox()
+            
+        #     if prox_values[0] > 100 or prox_values[7] > 100:
+        #         print("Obstacle detected! Initiating PID Wall Follower...")
+        #         # Map the obstacle (Black = 4)
+        #         map_block_in_front(tx, ty, yaw, 4)
+        #         mode = WALL_FOLLOWER
+        #         wall_follow_start_time = time.time()
+        #         wall_pid.error = 0; wall_pid.integ = 0
+        #         continue
+
+        #     prox_right = (ea * prox_values[0] + eb * prox_values[1] + ec * prox_values[2] + ed * prox_values[3]) / (ea + eb + ec + ed)
+        #     prox_left = (ea * prox_values[7] + eb * prox_values[6] + ec * prox_values[5] + ed * prox_values[4]) / (ea + eb + ec + ed)
+            
+        #     left_speed = NORM_SPEED - ((NORM_SPEED * prox_right) / PROX_TH)
+        #     right_speed = NORM_SPEED - ((NORM_SPEED * prox_left) / PROX_TH)
+        #     r.set_speed(left_speed, right_speed)
+            
+        # # -------------------------------------------------------------
+        # # --- MODE: LOVER MODE (Object Lover based on Color) ----------
+        # # -------------------------------------------------------------
+        # elif mode == LOVER:
+        #     img = np.array(r.get_camera())
+        #     color_detections = r.get_colordetection(img)
+            
+        #     # Keep tracking the color we locked onto
+        #     label_to_find = "Red" if target_color == 2 else "Green"
+        #     valid_targets = [d for d in color_detections if d.label == label_to_find]
+            
+        #     if not valid_targets:
+        #         print("Lost visual on goal. Returning to EXPLORER.")
+        #         mode = EXPLORER
+        #         continue
+                
+        #     target = max(valid_targets, key=lambda d: d.area)
+            
+        #     # Check if we have arrived at the block
+        #     tof_distance = r.get_tof()
+        #     prox_values = r.get_smooth_prox()
+        #     TARGET_DISTANCE = 60 # 6 cm
+            
+        #     if tof_distance < TARGET_DISTANCE: # or prox_values[0] > 150 or prox_values[7] > 150:
+        #         print(f"Goal Reached! Mapping {label_to_find} block and circumnavigating.")
+        #         map_block_in_front(tx, ty, yaw, target_color)
+                
+        #         # Switch to wall follower to go around the goal block
+        #         mode = WALL_FOLLOWER
+        #         wall_follow_start_time = time.time()
+        #         wall_pid.error = 0; wall_pid.integ = 0
+        #         continue
+
+        #     # TRUE BRAITENBERG MATH (Continuous, No Dead-band)
+        #     camera_center = img.shape[1] / 2
+            
+        #     ANGULAR_GAIN = 1.2
+        #     DISTANCE_GAIN = 2.0
+            
+        #     distance_ds = ((tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE) * DISTANCE_GAIN
+        #     angular_ds = ((target.x_center - camera_center) / camera_center) * ANGULAR_GAIN
+            
+        #     left_speed = distance_ds + angular_ds
+        #     right_speed = distance_ds - angular_ds
+            
+        #     # Cap speeds to safe limits
+        #     left_speed = max(min(left_speed, 4.0), -4.0)
+        #     right_speed = max(min(right_speed, 4.0), -4.0)
+            
+        #     r.set_speed(left_speed, right_speed)    
             
         # -------------------------------------------------------------
         # --- MODE: WALL_FOLLOWER MODE (Circumnavigating Obstacles) ---
@@ -330,29 +486,64 @@ while r.go_on():
                 print("Circumnavigation complete. Resuming Explorer mode...")
                 mode = EXPLORER
                 continue
-
-            prox_values = r.get_calibrate_prox()
             
-            # Read right sensors for PID target (tracking the wall on the robot's right)
-            proxR = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
+            prox_values = get_smoothed_prox()
             
-            # Compute PID response
-            ds = wall_pid.compute(proxR, PID_WALL_TARGET)
-            ds += 0.05 # default bias to curve slightly toward the wall
-            
-            right_speed = NORM_SPEED + ds
-            left_speed = NORM_SPEED - ds
-            
-            # Clamping behavior for sharp cornering
-            if abs(ds) > PID_MAX_DS:
-                right_speed = +ds
-                left_speed = -ds
-                
             # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
-            if max(prox_values) < 30:
-                print("Lost wall contact. Returning to Explorer...")
-                mode = EXPLORER
-                continue
+            if max(prox_values) < 20:
+                # print("Lost wall contact. Returning to Explorer...")
+                # mode = EXPLORER
+                # continue
+                if lost_wall_start_time is None:
+                    lost_wall_start_time = time.time() # Start the timer
+                
+                elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
+                    print("Lost wall confirmed. Returning to Explorer...")
+                    mode = EXPLORER
+                    lost_wall_start_time = None # Reset
+                    continue
+            else:
+                # Wall detected --> Reset the timer
+                lost_wall_start_time = None
+            
+            # # Read right sensors for PID target (tracking the wall on the robot's right)
+            # proxR = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
+            
+            # # Compute PID response
+            # ds = wall_pid.compute(proxR, PID_WALL_TARGET)
+            # ds += 0.05 # default bias to curve slightly toward the wall
+            
+            # right_speed = NORM_SPEED + ds
+            # left_speed = NORM_SPEED - ds
+            
+            # --- NEW: Bidirectional PID Computation ---
+            if wall_following_side == "RIGHT":
+                # Standard right-wall tracking
+                prox_side = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
+                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
+                ds += 0.05 
+                
+                right_speed = NORM_SPEED + ds
+                left_speed = NORM_SPEED - ds
+                
+                # # Clamping for sharp cornering
+                # if abs(ds) > PID_MAX_DS:
+                #     right_speed = +ds
+                #     left_speed = -ds
+            elif wall_following_side == "LEFT":
+                # Mirror the sensors for the Left wall (0->7, 1->6, 2->5, 3->4)
+                prox_side = (wa * prox_values[7] + wb * prox_values[6] + wc * prox_values[5] + wd * prox_values[4]) / (wa + wb + wc + wd)
+                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
+                ds += 0.05 
+                
+                # Swap the speeds for the Left side
+                left_speed = NORM_SPEED + ds
+                right_speed = NORM_SPEED - ds
+                
+                # # Clamping for sharp cornering (not necessary perhaps)
+                # if abs(ds) > PID_MAX_DS:
+                #     left_speed = +ds
+                #     right_speed = -ds
 
             r.set_speed(left_speed, right_speed)
             
@@ -378,10 +569,13 @@ while r.go_on():
         print("Re-sync complete:", tx, ty, yaw)
         
         # Adjust the wall following clock if it was interrupted
-        if mode == WALL_FOLLOWER and wall_follow_start_time is not None and resync_interruption_start is not None:
+        if mode == WALL_FOLLOWER and (wall_follow_start_time is not None or lost_wall_start_time is not None) and resync_interruption_start is not None:
             interruption_duration = time.time() - resync_interruption_start
             # Shift the start time forward, effectively "freezing" the countdown during resync
-            wall_follow_start_time += interruption_duration
+            if wall_follow_start_time is not None:
+                wall_follow_start_time += interruption_duration
+            elif lost_wall_start_time is not None:
+                lost_wall_start_time += interruption_duration
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
 

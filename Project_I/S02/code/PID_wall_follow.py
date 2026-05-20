@@ -2,7 +2,7 @@
 
 from unifr_api_epuck import wrapper
 import os # for log files
-
+from collections import deque
 import signal
 
 MY_IP = '192.168.2.202'
@@ -10,6 +10,21 @@ robot = wrapper.get_robot(MY_IP)
 
 def handler(signum, frame):
     robot.clean_up()
+
+def get_smoothed_prox():
+    """Fetches raw prox values, applies a moving average, and returns smoothed values."""
+    raw_values = robot.get_calibrate_prox()
+    smoothed_values = []
+    
+    for i in range(8):
+        # Push the new raw reading into the queue for sensor 'i'
+        prox_history[i].append(raw_values[i])
+        
+        # Calculate the average of the window
+        avg_val = sum(prox_history[i]) / len(prox_history[i])
+        smoothed_values.append(avg_val)
+        
+    return smoothed_values
 
 signal.signal(signal.SIGINT, handler)
 
@@ -23,8 +38,8 @@ c = 1
 d = 0
 
 # PID parameters
-K = 0.005    
-T_D = 0
+K = 0.0055 
+T_D = 0.2
 T_I = 9999999999  #optional
 
 class PID:
@@ -80,11 +95,15 @@ step = 0
 robot.init_sensors()
 robot.calibrate_prox()
 
+WINDOW_SIZE = 10    # Moving Average Filter Buffers (8 sensors, storing 10 values each)
+prox_history = [deque(maxlen=WINDOW_SIZE) for _ in range(8)]
+
 robot.sleep(2)
 
 #infinite loop
 while robot.go_on():
-    ps = robot.get_calibrate_prox()
+    #ps = robot.get_calibrate_prox()
+    ps = get_smoothed_prox()
     
     proxR = (a * ps[0] + b * ps[1] + c * ps[2] + d * ps[3]) / (a+b+c+d);
                       
