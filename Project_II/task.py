@@ -506,16 +506,6 @@ while r.go_on():
                 # Wall detected --> Reset the timer
                 lost_wall_start_time = None
             
-            # # Read right sensors for PID target (tracking the wall on the robot's right)
-            # proxR = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
-            
-            # # Compute PID response
-            # ds = wall_pid.compute(proxR, PID_WALL_TARGET)
-            # ds += 0.05 # default bias to curve slightly toward the wall
-            
-            # right_speed = NORM_SPEED + ds
-            # left_speed = NORM_SPEED - ds
-            
             # --- NEW: Bidirectional PID Computation ---
             if wall_following_side == "RIGHT":
                 # Standard right-wall tracking
@@ -526,7 +516,7 @@ while r.go_on():
                 right_speed = NORM_SPEED + ds
                 left_speed = NORM_SPEED - ds
                 
-                # # Clamping for sharp cornering
+                # # Clamping for sharp cornering (not necessary perhaps)
                 # if abs(ds) > PID_MAX_DS:
                 #     right_speed = +ds
                 #     left_speed = -ds
@@ -569,7 +559,10 @@ while r.go_on():
         print("Re-sync complete:", tx, ty, yaw)
         
         # Adjust the wall following clock if it was interrupted
-        if mode == WALL_FOLLOWER and (wall_follow_start_time is not None or lost_wall_start_time is not None) and resync_interruption_start is not None:
+        if (mode == WALL_FOLLOWER and 
+            (wall_follow_start_time is not None or lost_wall_start_time is not None) and 
+            resync_interruption_start is not None):
+            
             interruption_duration = time.time() - resync_interruption_start
             # Shift the start time forward, effectively "freezing" the countdown during resync
             if wall_follow_start_time is not None:
