@@ -36,6 +36,7 @@ yaw = None
 frame = None
 markers = None
 last_tx, last_ty, last_yaw = None, None, None
+last_ix, last_iy = None, None
 
 frame_count = 0
 
@@ -58,7 +59,7 @@ last_resync = 0
 has_not_resync = True
 resync_start_time = None
 RESYNC_DURATION = 7.0
-RECALIBRATION_TIMEOUT = 19.0
+RECALIBRATION_TIMEOUT = 59.0
 
 # Geofencing
 BUFFER = 0.1
@@ -70,26 +71,25 @@ ea, eb, ec, ed = 1, 2, 2, -1
 
 # PID Parameters for Wall Following
 PID_MAX_DS = 1.5
-PID_WALL_TARGET = 200
+PID_WALL_TARGET = 150
 wa, wb, wc, wd = 4, 2, 1, 0
 
 DEFAULT_DS_OFFSET = 0.05 #202 0.05, 207 0.1
 K = 0.0055              #202 0.0055, 207 0.0085
-T_D = 0.2         #202 0.2, 207 0.3
+T_D = 0.7               #202 0.7, 207 0.3
 T_I = 9999999999
 
 wall_pid = PID(K, T_I, T_D)
-
 # Behavior tracking variables
 resync_interruption_start = None
 
 # Wall Following timeouts and thresholds
-WALL_DETECTION_THRESHOLD = 150
+WALL_DETECTION_THRESHOLD = PID_WALL_TARGET
 wall_following_side = "RIGHT"
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 20.0
+WALL_FOLLOW_DURATION = 60.0
 lost_wall_start_time = 0
-LOST_WALL_TIMEOUT = 1.0 
+LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
 WALL_EXIT_TIMEOUT = 1.0
 
@@ -296,10 +296,10 @@ while tx is None or ty is None:
         time.sleep(0.1) # Wait slightly for the camera thread to catch up
 
 # Now that we have a real position, define borders
-x_min = tx - 0.45
-x_max = tx + 0.45
-y_min = ty - 0.40
-y_max = ty + 0.40
+x_min = tx - 0.55
+x_max = tx + 0.55
+y_min = ty - 0.50
+y_max = ty + 0.50
 
 # create grid map
 nx = int((x_max - x_min) / resolution)
@@ -311,7 +311,7 @@ print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f},
 r.init_sensors()
 r.calibrate_prox()
 
-WINDOW_SIZE = 4    # Moving Average Filter Buffers
+WINDOW_SIZE = 3    # Moving Average Filter Buffers
 prox_history = [deque(maxlen=WINDOW_SIZE) for _ in range(8)]
 
 r.initiate_model()
@@ -351,19 +351,38 @@ while r.go_on():
         continue
 
     # get tracking infos
-    if frame_count % 10 == 0:
-        tx, ty, yaw = update_pose()
-    else:
-        tx, ty, yaw = last_tx, last_ty, last_yaw
+    # if frame_count % 10 == 0:
+    #     tx, ty, yaw = update_pose()
+    # else:
+    #     tx, ty, yaw = last_tx, last_ty, last_yaw
+    tx, ty, yaw = update_pose()
     if tx is None:
         continue
 
     ## memorize path taken by robot
-    if frame_count % 2 ==0 and tx is not None:
-        path.append((tx, ty))
-        for x, y in path:
-            ix, iy = world_to_grid(x, y)
+    # if frame_count % 2 ==0 and tx is not None:
+    #     path.append((tx, ty))
+    #     for x, y in path:
+    #         ix, iy = world_to_grid(x, y)
+    #         set_cell_if_empty(grid, ix, iy, 1)
+    if tx is not None:
+        ix, iy = world_to_grid(tx, ty)
+        
+        # If we have a valid previous position, draw a solid line between them
+        if last_ix is not None and last_iy is not None:
+            # Determine how many grid cells are between the previous and current step
+            steps = max(abs(ix - last_ix), abs(iy - last_iy))
+            for step in range(steps + 1):
+                t = step / steps if steps > 0 else 1
+                # Linearly interpolate the pixels to ensure zero gaps
+                interp_x = int(round(last_ix + t * (ix - last_ix)))
+                interp_y = int(round(last_iy + t * (iy - last_iy)))
+                set_cell_if_empty(grid, interp_x, interp_y, 1)
+        else:
             set_cell_if_empty(grid, ix, iy, 1)
+            
+        # Update trackers for the next frame iteration
+        last_ix, last_iy = ix, iy
 
     ############## robot explores and recalibrates the position ############
     update_leds(state, mode, target_color if 'target_color' in locals() else None, 
@@ -414,6 +433,9 @@ while r.go_on():
                 right_speed = NORM_SPEED + ds
 
         if in_danger_zone:
+            #print("Warning: Approaching boundary of map!")
+            r.enable_all_led()
+            r.disable_all_led()
             r.set_speed(left_speed, right_speed)
             continue
 
@@ -471,12 +493,12 @@ while r.go_on():
                 mode = LOVER
                 continue
 
-            # Normal Braitenberg Explorer in case no color detected            
+            # Wall-following Braitenberg Explorer in case no color detected            
             prox_values = get_smoothed_prox()
             
             if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
-                (   np.mean(prox_values[0] + prox_values[1]) > WALL_DETECTION_THRESHOLD or 
-                    np.mean(prox_values[7] + prox_values[6]) > WALL_DETECTION_THRESHOLD)):
+                (   np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
+                    np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
@@ -485,7 +507,7 @@ while r.go_on():
                 wall_pid.integ = 0
                 
                 # Compare front-left sensors vs front-right sensors
-                if (np.mean(prox_values[7] + prox_values[6])) > (np.mean(prox_values[0] + prox_values[1])):
+                if (np.mean([prox_values[7], prox_values[6]])) > (np.mean([prox_values[0], prox_values[1]])):
                     wall_following_side = "LEFT"
                 else:
                     wall_following_side = "RIGHT"
@@ -510,6 +532,73 @@ while r.go_on():
             left_speed = clamp(left_speed)
             right_speed = clamp(right_speed)
             
+            r.set_speed(left_speed, right_speed)
+            
+        # -------------------------------------------------------------
+        # --- MODE: WALL FOLLOWER MODE (Circumnavigating Obstacles) ---
+        # -------------------------------------------------------------
+        elif mode == WALL_FOLLOWER:
+            # Safety timeout: Check if we have spent enough time mapping this block
+            if time.time() - wall_follow_start_time > WALL_FOLLOW_DURATION:
+                print("Circumnavigation complete. Resuming Explorer mode...")
+                mode = EXPLORER
+                wall_exit_time = time.time()
+                continue
+            
+            prox_values = get_smoothed_prox()
+            #prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
+            
+            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
+            if max(prox_values) < 20:
+                # print("Lost wall contact. Returning to Explorer...")
+                # mode = EXPLORER
+                # continue
+                if lost_wall_start_time is None:
+                    lost_wall_start_time = time.time()
+                
+                elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
+                    print("Lost wall confirmed. Returning to Explorer...")
+                    mode = EXPLORER
+                    lost_wall_start_time = 0
+                    continue
+            else:
+                # Wall detected --> Reset the timer
+                lost_wall_start_time = 0
+            
+            # --- NEW: Bidirectional PID Computation ---
+            if wall_following_side == "RIGHT":
+                # Standard right-wall tracking
+                prox_side = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
+                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
+                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving 
+                
+                right_speed = NORM_SPEED + ds
+                left_speed = NORM_SPEED - ds
+                
+                # Clamping for sharp cornering (not necessary perhaps)
+                if abs(ds) > PID_MAX_DS:
+                    right_speed = +ds
+                    left_speed = -ds
+                    
+            elif wall_following_side == "LEFT":
+                # Mirror the sensors for the Left wall (0->7, 1->6, 2->5, 3->4)
+                prox_side = (wa * prox_values[7] + wb * prox_values[6] + wc * prox_values[5] + wd * prox_values[4]) / (wa + wb + wc + wd)
+                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
+                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving
+                
+                # Swap the speeds for the Left side
+                left_speed = NORM_SPEED + ds
+                right_speed = NORM_SPEED - ds
+                
+                # Clamping for sharp cornering (not necessary perhaps)
+                if abs(ds) > PID_MAX_DS:
+                    left_speed = +ds
+                    right_speed = -ds
+
+            # Clamp speeds to max
+            left_speed = clamp(left_speed)
+            right_speed = clamp(right_speed)
+
             r.set_speed(left_speed, right_speed)
             
         # -------------------------------------------------------------
@@ -597,73 +686,6 @@ while r.go_on():
             right_speed = clamp(right_speed)
             
             r.set_speed(left_speed, right_speed)    
-            
-        # -------------------------------------------------------------
-        # --- MODE: WALL FOLLOWER MODE (Circumnavigating Obstacles) ---
-        # -------------------------------------------------------------
-        elif mode == WALL_FOLLOWER:
-            # Safety timeout: Check if we have spent enough time mapping this block
-            if time.time() - wall_follow_start_time > WALL_FOLLOW_DURATION:
-                print("Circumnavigation complete. Resuming Explorer mode...")
-                mode = EXPLORER
-                wall_exit_time = time.time()
-                continue
-            
-            #prox_values = get_smoothed_prox()
-            prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
-            
-            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
-            if max(prox_values) < 20:
-                # print("Lost wall contact. Returning to Explorer...")
-                # mode = EXPLORER
-                # continue
-                if lost_wall_start_time is None:
-                    lost_wall_start_time = time.time()
-                
-                elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
-                    print("Lost wall confirmed. Returning to Explorer...")
-                    mode = EXPLORER
-                    lost_wall_start_time = 0
-                    continue
-            else:
-                # Wall detected --> Reset the timer
-                lost_wall_start_time = 0
-            
-            # --- NEW: Bidirectional PID Computation ---
-            if wall_following_side == "RIGHT":
-                # Standard right-wall tracking
-                prox_side = (wa * prox_values[0] + wb * prox_values[1] + wc * prox_values[2] + wd * prox_values[3]) / (wa + wb + wc + wd)
-                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
-                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving 
-                
-                right_speed = NORM_SPEED + ds
-                left_speed = NORM_SPEED - ds
-                
-                # Clamping for sharp cornering (not necessary perhaps)
-                if abs(ds) > PID_MAX_DS:
-                    right_speed = +ds
-                    left_speed = -ds
-                    
-            elif wall_following_side == "LEFT":
-                # Mirror the sensors for the Left wall (0->7, 1->6, 2->5, 3->4)
-                prox_side = (wa * prox_values[7] + wb * prox_values[6] + wc * prox_values[5] + wd * prox_values[4]) / (wa + wb + wc + wd)
-                ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
-                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving
-                
-                # Swap the speeds for the Left side
-                left_speed = NORM_SPEED + ds
-                right_speed = NORM_SPEED - ds
-                
-                # Clamping for sharp cornering (not necessary perhaps)
-                if abs(ds) > PID_MAX_DS:
-                    left_speed = +ds
-                    right_speed = -ds
-
-            # Clamp speeds to max
-            left_speed = clamp(left_speed)
-            right_speed = clamp(right_speed)
-
-            r.set_speed(left_speed, right_speed)
         
         # -------------------------------------------------------------
         # --- MODE: PATH FINDER MODE (Navigation) ---------------------
