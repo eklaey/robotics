@@ -541,7 +541,7 @@ while r.go_on():
         tx, ty, yaw = update_pose()
         print("Re-sync complete:", tx, ty, yaw)
         
-        # Adjust the wall following clock if it was interrupted
+        # Adjust the wall clocks if interrupted by re-sync
         if (mode == WALL_FOLLOWER and 
             (wall_follow_start_time != 0 or 
              lost_wall_start_time != 0 or
@@ -549,11 +549,15 @@ while r.go_on():
             resync_interruption_start is not None):
             
             interruption_duration = time.time() - resync_interruption_start
-            # Shift the start time forward, effectively "freezing" the countdown during resync
+            
+            # Shift the time counters forward, effectively "freezing" the countdown during resync
             if wall_follow_start_time != 0:
                 wall_follow_start_time += interruption_duration
             elif lost_wall_start_time != 0:
                 lost_wall_start_time += interruption_duration
+            elif wall_exit_time != 0:
+                wall_exit_time += interruption_duration
+                
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
 
