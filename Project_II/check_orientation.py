@@ -30,7 +30,7 @@ except Exception as e:
 
 ###################### Robot setup #################################################
 #IP
-MY_IP = '192.168.2.202' 
+MY_IP = '192.168.2.207' 
 ''
 r = wrapper.get_robot(MY_IP)
 

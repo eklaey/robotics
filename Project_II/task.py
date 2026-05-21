@@ -13,6 +13,7 @@ import matplotlib.colors as mcolors
 import time
 import sys
 from collections import deque
+import networkx as nx
 
 ############# initialize tracking (camera streaming) ###################
 rtsp_url = f"rtsp://192.168.2.150:8554/cam1"
@@ -40,13 +41,11 @@ frame_count = 0
 
 ###################### ROBOT SETUP #####################################
 ########################################################################
-MY_IP = '192.168.2.207' # Robot IP to be change accordingly to the used one
+MY_IP = '192.168.2.202' # Robot IP to be change accordingly to the used one
 r = wrapper.get_robot(MY_IP)
-
-####################### variables ######################################
-
 MARKER_ID = 19    # ArUco marker ID to be change accordingly to the used one
 
+####################### variables ######################################
 NORM_SPEED = 1.5
 
 x_min = x_max = y_min = y_max = 0
@@ -59,10 +58,11 @@ last_resync = 0
 has_not_resync = True
 resync_start_time = None
 RESYNC_DURATION = 7.0
-RECALIBRATION_TIMEOUT = 19.0
+RECALIBRATION_TIMEOUT = 29.0
 
+# Geofencing
 BUFFER = 0.1
-Kp = 0.5
+Kp_fence = 0.5
 
 # Braitenberg EXPLORER
 PROX_TH = 250
@@ -73,34 +73,41 @@ PID_MAX_DS = 1.5
 PID_WALL_TARGET = 200
 wa, wb, wc, wd = 4, 2, 1, 0
 
-# older working values
-# DEFAULT_DS_OFFSET = 0.05
-# K = 0.0055   
-# T_D = 0.2
-
-DEFAULT_DS_OFFSET = 0.1
-K = 0.0085
-T_D = 0.3
+DEFAULT_DS_OFFSET = 0.1 #originally 0.05, 207 0.1
+K = 0.0085              #originally 0.0055, 207 0.0085
+T_D = 0.3         #originally 0.2, 207 0.3
 T_I = 9999999999
 
-# Instantiate the PID controller
 wall_pid = PID(K, T_I, T_D)
 
 # Behavior tracking variables
 resync_interruption_start = None
 
+# Wall Following timeouts and thresholds
 WALL_DETECTION_THRESHOLD = 200
 wall_following_side = "RIGHT"
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 20.0
+WALL_FOLLOW_DURATION = 30.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 1.0 
 wall_exit_time = 0
 WALL_EXIT_TIMEOUT = 3.0
 
+# Object LOVER parameters
 TARGET_DISTANCE = 60
 ANGULAR_GAIN = 1.2
-DISTANCE_GAIN = 2.0
+DISTANCE_GAIN = 1.0
+
+USE_COLOR_DETECTION = True
+COLOR_DETECTION_THRESHOLD = 750 # Minimum area of color blob to be considered goal
+
+DETECTION_CONFIDENCE = 0.9
+
+# Navigation and Mapping
+num_goals_found = 0
+red_goal_grid = None
+green_goal_grid = None
+planned_path_world = [] # Will hold the physical (wx, wy) coordinates to drive to
 
 ###### simple state machine having basic and resync behaviors ##########
 BASE = "BASE"
@@ -179,10 +186,23 @@ def get_smoothed_prox():
         smoothed_values.append(avg_val)
         
     return smoothed_values
+def image_letterboxed():
+    """ Letterboxes image coming from robot's forward facing camera """
+    raw_img = np.array(r.get_camera()) # Shape: (3, 120, 160)
+    _, height, _ = raw_img.shape # (C, H, W) format from robot camera
+    
+    # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
+    y_start = int(120 * 0.30) 
+    y_end = int(120 * 0.80)  
+                
+    masked_img = raw_img.copy()
+    masked_img[:, 0:y_start, :] = 0
+    masked_img[:, y_end:height, :] = 0
+    return masked_img
 def map_block_in_front(tx, ty, yaw, block_type):
-    """ Projects 8cm forward from the robot's center and paints a 3x3 patch on the grid """
-    block_x = tx + 0.08 * math.cos(yaw)
-    block_y = ty + 0.08 * math.sin(yaw)
+    """ Projects block onto map from the robot's center and paints a 3x3 patch on the grid """
+    block_x = tx + 0.05 * math.cos(yaw)
+    block_y = ty + 0.05 * math.sin(yaw)
     bx, by = world_to_grid(block_x, block_y)
     
     # Paint a 3x3 grid patch so it is highly visible on the map
@@ -190,19 +210,33 @@ def map_block_in_front(tx, ty, yaw, block_type):
         for j in range(-1, 2):
             if 0 <= bx+i < grid.shape[1] and 0 <= by+j < grid.shape[0]:
                 grid[by+j, bx+i] = block_type
-def image_letterboxed():
-    """ Letterboxes image coming from robot's forward facing camera """
-    raw_img = np.array(r.get_camera())
-    height, width, _ = raw_img.shape
+def calculate_return_path(start_grid, target_grid, current_grid):
+    print("Converting Map to Graph...")
+    # Create a graph where every grid cell is connected to its Up/Down/Left/Right neighbors
+    G = nx.grid_2d_graph(current_grid.shape[0], current_grid.shape[1])
     
-    # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
-    y_start = int(height * 0.30) 
-    y_end = int(height * 0.80)  
-                
-    # Slice the array: [y_start to y_end, all X, all channels]
-    img = raw_img[y_start:y_end, :]
-    
-    return img
+    # Remove all obstacle cells (4) so the path cannot go through them
+    for y in range(current_grid.shape[0]):
+        for x in range(current_grid.shape[1]):
+            if current_grid[y, x] == 4:
+                if (y, x) in G:
+                    G.remove_node((y, x))
+    try:
+        # Find the shortest path (Dijkstra algorithm)
+        # NetworkX grid nodes are represented as (y, x)
+        path = nx.shortest_path(G, source=(start_grid[1], start_grid[0]), target=(target_grid[1], target_grid[0]))
+        
+        # Convert the (y, x) grid path back into physical (wx, wy) coordinates
+        world_path = []
+        for p in path:
+            wx, wy = grid_to_world(p[1], p[0]) # p is (y, x)
+            world_path.append((wx, wy))
+            
+        print(f"Path successfully found! {len(world_path)} waypoints.")
+        return world_path
+    except nx.NetworkXNoPath:
+        print("CRITICAL: No valid path found through the maze!")
+        return []
                 
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
@@ -222,8 +256,8 @@ while tx is None or ty is None:
 # Now that we have a real position, define borders
 x_min = tx - 0.45
 x_max = tx + 0.45
-y_min = ty - 0.35
-y_max = ty + 0.35
+y_min = ty - 0.40
+y_max = ty + 0.40
 
 # create grid map
 nx = int((x_max - x_min) / resolution)
@@ -301,7 +335,6 @@ while r.go_on():
             # If we were wall following, note down when the interruption started 
             if mode == WALL_FOLLOWER and wall_follow_start_time is not None:
                 resync_interruption_start = time.time()
-            
             continue
         
         # -------------------------------------------------------------
@@ -331,7 +364,7 @@ while r.go_on():
                 # Normalize angle to [-pi, pi]
                 angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
                 
-                ds = Kp * angle_error
+                ds = Kp_fence * angle_error
                 
                 left_speed = NORM_SPEED - ds
                 right_speed = NORM_SPEED + ds
@@ -344,16 +377,21 @@ while r.go_on():
         # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
         # -------------------------------------------------------------
         if mode == EXPLORER:
-            # img = np.array(r.get_camera())
             img = image_letterboxed()
-            color_detections = r.get_colordetection(img)
             
+            if USE_COLOR_DETECTION:
+                detections = r.get_colordetection(img)
+                red_label, green_label = "Red", "Green"
+            else:
+                # detections = r.get_detection(img, conf_thresh=DETECTION_CONFIDENCE)
+                red_label, green_label = "Red Block", "Green Block"   
+                         
             # Filter for Red and Green
             target = None
             target_color = None
-            if color_detections:
-                reds = [d for d in color_detections if d.label == "Red"]
-                greens = [d for d in color_detections if d.label == "Green"]
+            if detections:
+                reds = [d for d in detections if d.label == "Red"]
+                greens = [d for d in detections if d.label == "Green"]
                 
                 # Pick the largest area detected
                 if reds and greens:
@@ -369,8 +407,19 @@ while r.go_on():
                     target, target_color = max(greens, key=lambda d: d.area), 3
 
             # If a significant color blob is seen, switch to LOVER
-            if target is not None and target.area > 50:
+            valid_target_found = False
+            if target is not None:
+                if USE_COLOR_DETECTION:
+                    # Color blobs must pass the area threshold
+                    if target.area > COLOR_DETECTION_THRESHOLD:
+                        valid_target_found = True
+                else:
+                    # Object detection already passed the confidence threshold in the API call
+                    valid_target_found = True
+            
+            if valid_target_found:
                 print(f"Goal detected! Switching to LOVER mode ({target.label}).")
+                num_goals_found += 1
                 mode = LOVER
                 continue
 
@@ -388,7 +437,7 @@ while r.go_on():
                 wall_pid.integ = 0
                 
                 # Compare front-left sensors vs front-right sensors
-                if prox_values[7] + prox_values[6] > prox_values[0] + prox_values[1]:
+                if (prox_values[7] + prox_values[6]) > (prox_values[0] + prox_values[1]):
                     wall_following_side = "LEFT"
                 else:
                     wall_following_side = "RIGHT"
@@ -409,19 +458,29 @@ while r.go_on():
             left_speed = NORM_SPEED - ds_left
             right_speed = NORM_SPEED - ds_right
             
+            #Clamp speeds to max
+            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            
             r.set_speed(left_speed, right_speed)
             
         # -------------------------------------------------------------
         # --- MODE: LOVER MODE (Object Lover based on Color) ----------
         # -------------------------------------------------------------
         elif mode == LOVER:
-            #img = np.array(r.get_camera())
             img = image_letterboxed()
-            color_detections = r.get_colordetection(img)
-            
+            if USE_COLOR_DETECTION:
+                detections = r.get_colordetection(img)
+                label_map = {"Red": 2, "Green": 3}
+            else:
+                # detections = r.get_detection(img, conf_thresh=DETECTION_CONFIDENCE)
+                label_map = {"Red Block": 2, "Green Block": 3}    
+                        
             # Keep tracking the color we locked onto
-            label_to_find = "Red" if target_color == 2 else "Green"
-            valid_targets = [d for d in color_detections if d.label == label_to_find]
+            target_str = "Red" if target_color == 2 else "Green"
+            search_str = target_str if USE_COLOR_DETECTION else f"{target_str} Block"
+            
+            valid_targets = [d for d in detections if d.label == search_str]
             
             if not valid_targets:
                 print("Lost visual on goal. Returning to EXPLORER.")
@@ -432,17 +491,41 @@ while r.go_on():
             
             # Check if we have arrived at the block
             tof_distance = r.get_tof()
-            prox_values = r.get_smooth_prox()
+            prox_values = get_smoothed_prox()
             
-            if tof_distance < TARGET_DISTANCE: # or prox_values[0] > 150 or prox_values[7] > 150:
-                print(f"Goal Reached! Mapping {label_to_find} block and circumnavigating.")
+            if tof_distance < TARGET_DISTANCE or (prox_values[0] > 500 or prox_values[7] > 500):
+                print(f"Goal Reached! Mapping {target_str} block and circumnavigating.")
+                # Get the grid coordinate of the block to map it
+                block_x = tx + 0.08 * math.cos(yaw)
+                block_y = ty + 0.08 * math.sin(yaw)
+                bx, by = world_to_grid(block_x, block_y)
+                
+                # Map and save location of the block on the grid
                 map_block_in_front(tx, ty, yaw, target_color)
                 
-                # Switch to wall follower to go around the goal block
+                # --- PHASE 2 TRIGGER CHECK ---
+                if red_goal_grid is not None and green_goal_grid is not None:
+                    print("+++ BOTH GOALS FOUND! INITIATING PHASE 2 NAVIGATION +++")
+                    r.set_speed(0, 0)
+                    
+                    # We are currently at the 2nd goal. We need to go back to the 1st goal.
+                    # Figure out which one we are at right now
+                    current_grid_pos = world_to_grid(tx, ty)
+                    if target_color == 2: # We are at Red, go to Green
+                        target_destination = green_goal_grid
+                    else:                 # We are at Green, go to Red
+                        target_destination = red_goal_grid
+                        
+                    planned_path_world = calculate_return_path(current_grid_pos, target_destination, grid)
+                    #mode = PATH_FINDER
+                    continue
+                
+                # If we haven't found both yet, keep exploring (Wall Follow first)
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
                 wall_pid.error = 0; wall_pid.integ = 0
                 continue
+
 
             # OBJECT LOVER (Continuous, No Dead-band)
             camera_center = img.shape[1] / 2
@@ -453,14 +536,14 @@ while r.go_on():
             left_speed = distance_ds + angular_ds
             right_speed = distance_ds - angular_ds
             
-            # Cap speeds to safe limits
-            left_speed = max(min(left_speed, 4.0), -4.0)
-            right_speed = max(min(right_speed, 4.0), -4.0)
+            # Clamp speeds to max
+            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
             
             r.set_speed(left_speed, right_speed)    
             
         # -------------------------------------------------------------
-        # --- MODE: WALL_FOLLOWER MODE (Circumnavigating Obstacles) ---
+        # --- MODE: WALL FOLLOWER MODE (Circumnavigating Obstacles) ---
         # -------------------------------------------------------------
         elif mode == WALL_FOLLOWER:
             # Safety timeout: Check if we have spent enough time mapping this block
@@ -499,30 +582,74 @@ while r.go_on():
                 right_speed = NORM_SPEED + ds
                 left_speed = NORM_SPEED - ds
                 
-                # # Clamping for sharp cornering (not necessary perhaps)
-                # if abs(ds) > PID_MAX_DS:
-                #     right_speed = +ds
-                #     left_speed = -ds
+                # Clamping for sharp cornering (not necessary perhaps)
+                if abs(ds) > PID_MAX_DS:
+                    right_speed = +ds
+                    left_speed = -ds
+                    
             elif wall_following_side == "LEFT":
                 # Mirror the sensors for the Left wall (0->7, 1->6, 2->5, 3->4)
                 prox_side = (wa * prox_values[7] + wb * prox_values[6] + wc * prox_values[5] + wd * prox_values[4]) / (wa + wb + wc + wd)
                 ds = wall_pid.compute(prox_side, PID_WALL_TARGET)
-                ds += 0.05 
+                ds += DEFAULT_DS_OFFSET  # Small forward bias to keep it moving
                 
                 # Swap the speeds for the Left side
                 left_speed = NORM_SPEED + ds
                 right_speed = NORM_SPEED - ds
                 
-                # # Clamping for sharp cornering (not necessary perhaps)
-                # if abs(ds) > PID_MAX_DS:
-                #     left_speed = +ds
-                #     right_speed = -ds
+                # Clamping for sharp cornering (not necessary perhaps)
+                if abs(ds) > PID_MAX_DS:
+                    left_speed = +ds
+                    right_speed = -ds
 
+            # Clamp speeds to max
+            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+
+            r.set_speed(left_speed, right_speed)
+        
+        # -------------------------------------------------------------
+        # --- MODE: PATH FINDER MODE (Navigation) ---------------------
+        # -------------------------------------------------------------
+        elif mode == PATH_FINDER:
+            if not planned_path_world:
+                print("DESTINATION REACHED! Phase 2 Complete.")
+                r.set_speed(0, 0)
+                # You can optionally break the while loop here to end the script
+                continue
+                
+            # Get the current waypoint
+            target_wx, target_wy = planned_path_world[0]
+            
+            # Check how far we are from the waypoint
+            dist_to_waypoint = math.sqrt((target_wx - tx)**2 + (target_wy - ty)**2)
+            
+            # If we are closer than 4cm, pop the waypoint and target the next one
+            if dist_to_waypoint < 0.04:
+                planned_path_world.pop(0)
+                continue
+                
+            # Calculate angle to the waypoint
+            target_angle = math.atan2(target_wy - ty, target_wx - tx)
+            angle_error = target_angle - yaw
+            angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
+            
+            # Steer towards the waypoint (Proportional steering)
+            Kp_nav = 1.5
+            ds = Kp_nav * angle_error
+            
+            # Drive forward while turning
+            # We slow down the base speed so it doesn't overshoot waypoints
+            nav_speed = NORM_SPEED * 0.8 
+            left_speed = max(min(nav_speed - ds, 4.0), -4.0)
+            right_speed = max(min(nav_speed + ds, 4.0), -4.0)
+            
             r.set_speed(left_speed, right_speed)
             
 
     ########### RESYNC ############
     elif state == RE_SYNC:
+        print("Re-syncing pose with ArUco marker...")
         r.set_speed(0, 0)
         if resync_start_time is None:
             resync_start_time = time.time()
@@ -570,17 +697,16 @@ while r.go_on():
     
     if frame_count % 50 == 0:  # SHOWS updated map every 50 frames
         plt.clf()
-        plt.imshow(np.fliplr(grid), origin='upper', cmap='gray')
+        #plt.imshow(np.fliplr(grid), origin='upper', cmap='gray')
+        plt.imshow(np.fliplr(grid), origin='upper', cmap=cmap_custom, norm=norm_custom)
         plt.title("Map")
         plt.pause(0.001)
-
-    if frame_count % 200== 0:     #saves the map each 200 frames, can be later checked and saved with the code "check_map.py"
-        np.save("map.npy", grid)
         
     cv2.imshow('RTSP Camera Stream', frame)  #shows camera stream
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
+np.save("map.npy", grid) # can be viewd with check_map.py
 camera.release()
 cv2.destroyAllWindows()
 r.clean_up()
