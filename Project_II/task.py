@@ -98,6 +98,9 @@ LOST_WALL_TIMEOUT = 1.0
 wall_exit_time = 0
 WALL_EXIT_TIMEOUT = 3.0
 
+TARGET_DISTANCE = 60
+ANGULAR_GAIN = 1.2
+DISTANCE_GAIN = 2.0
 
 ###### simple state machine having basic and resync behaviors ##########
 BASE = "BASE"
@@ -187,6 +190,20 @@ def map_block_in_front(tx, ty, yaw, block_type):
         for j in range(-1, 2):
             if 0 <= bx+i < grid.shape[1] and 0 <= by+j < grid.shape[0]:
                 grid[by+j, bx+i] = block_type
+def image_letterboxed():
+    """ Letterboxes image coming from robot's forward facing camera """
+    raw_img = np.array(r.get_camera())
+    height, width, _ = raw_img.shape
+    
+    # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
+    y_start = int(height * 0.30) 
+    y_end = int(height * 0.80)  
+                
+    # Slice the array: [y_start to y_end, all X, all channels]
+    img = raw_img[y_start:y_end, :]
+    
+    return img
+                
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
 tx, ty, yaw = None, None, None
@@ -221,13 +238,13 @@ r.calibrate_prox()
 WINDOW_SIZE = 4    # Moving Average Filter Buffers
 prox_history = [deque(maxlen=WINDOW_SIZE) for _ in range(8)]
 
-# r.initiate_model()
-# os.makedirs("./img", exist_ok=True)
-# r.init_camera("./img")
+r.initiate_model()
+os.makedirs("./img", exist_ok=True)
+r.init_camera("./img")
 
-# # Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
-# cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
-# norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
+# Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
+cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
+norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
 
 #############################################################################
 ######################## GO_ON LOOP #########################################
@@ -324,11 +341,42 @@ while r.go_on():
             continue
 
         # -------------------------------------------------------------
-        # --- MODE: EXPLORER MODE (Wandering Open Space) --------------
+        # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
         # -------------------------------------------------------------
         if mode == EXPLORER:
+            # img = np.array(r.get_camera())
+            img = image_letterboxed()
+            color_detections = r.get_colordetection(img)
+            
+            # Filter for Red and Green
+            target = None
+            target_color = None
+            if color_detections:
+                reds = [d for d in color_detections if d.label == "Red"]
+                greens = [d for d in color_detections if d.label == "Green"]
+                
+                # Pick the largest area detected
+                if reds and greens:
+                    best_red = max(reds, key=lambda d: d.area)
+                    best_green = max(greens, key=lambda d: d.area)
+                    if best_red.area > best_green.area:
+                        target, target_color = best_red, 2 # 2 is Red in our map
+                    else:
+                        target, target_color = best_green, 3 # 3 is Green in our map
+                elif reds:
+                    target, target_color = max(reds, key=lambda d: d.area), 2
+                elif greens:
+                    target, target_color = max(greens, key=lambda d: d.area), 3
+
+            # If a significant color blob is seen, switch to LOVER
+            if target is not None and target.area > 50:
+                print(f"Goal detected! Switching to LOVER mode ({target.label}).")
+                mode = LOVER
+                continue
+
+            # Normal Braitenberg Explorer in case no color detected            
             prox_values = get_smoothed_prox()
-                        
+            
             if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
                 (   (prox_values[0]) > WALL_DETECTION_THRESHOLD or 
                     (prox_values[7]) > WALL_DETECTION_THRESHOLD)):
@@ -362,124 +410,54 @@ while r.go_on():
             right_speed = NORM_SPEED - ds_right
             
             r.set_speed(left_speed, right_speed)
-        
-        # # -------------------------------------------------------------
-        # # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
-        # # -------------------------------------------------------------
-        # if mode == EXPLORER:
-        #     # # 1. Look for Colored Goals using the fast Color API
-        #     # img = np.array(r.get_camera())
             
-        #     # Look for Colored Goals using faster Color API
-        #     raw_img = np.array(r.get_camera())
+        # -------------------------------------------------------------
+        # --- MODE: LOVER MODE (Object Lover based on Color) ----------
+        # -------------------------------------------------------------
+        elif mode == LOVER:
+            #img = np.array(r.get_camera())
+            img = image_letterboxed()
+            color_detections = r.get_colordetection(img)
             
-        #     # --- LETTERBOXING ---
-        #     height, width, _ = raw_img.shape
+            # Keep tracking the color we locked onto
+            label_to_find = "Red" if target_color == 2 else "Green"
+            valid_targets = [d for d in color_detections if d.label == label_to_find]
             
-        #     # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
-        #     y_start = int(height * 0.30) 
-        #     y_end = int(height * 0.80)   
-            
-        #     # Slice the array: [y_start to y_end, all X, all channels]
-        #     img = raw_img[y_start:y_end, :]
-            
-        #     color_detections = r.get_colordetection(img)
-            
-        #     # Filter for Red and Green
-        #     target = None
-        #     target_color = None
-        #     if color_detections:
-        #         reds = [d for d in color_detections if d.label == "Red"]
-        #         greens = [d for d in color_detections if d.label == "Green"]
+            if not valid_targets:
+                print("Lost visual on goal. Returning to EXPLORER.")
+                mode = EXPLORER
+                continue
                 
-        #         # Pick the largest area detected
-        #         if reds and greens:
-        #             best_red = max(reds, key=lambda d: d.area)
-        #             best_green = max(greens, key=lambda d: d.area)
-        #             if best_red.area > best_green.area:
-        #                 target, target_color = best_red, 2 # 2 is Red in our map
-        #             else:
-        #                 target, target_color = best_green, 3 # 3 is Green in our map
-        #         elif reds:
-        #             target, target_color = max(reds, key=lambda d: d.area), 2
-        #         elif greens:
-        #             target, target_color = max(greens, key=lambda d: d.area), 3
-
-        #     # If a significant color blob is seen, switch to LOVER
-        #     if target is not None and target.area > 50:
-        #         print(f"Goal detected! Switching to LOVER mode ({target.label}).")
-        #         mode = LOVER
-        #         continue
-
-        #     # 2. Normal Braitenberg Explorer (If no color seen)
-        #     prox_values = r.get_calibrate_prox()
+            target = max(valid_targets, key=lambda d: d.area)
             
-        #     if prox_values[0] > 100 or prox_values[7] > 100:
-        #         print("Obstacle detected! Initiating PID Wall Follower...")
-        #         # Map the obstacle (Black = 4)
-        #         map_block_in_front(tx, ty, yaw, 4)
-        #         mode = WALL_FOLLOWER
-        #         wall_follow_start_time = time.time()
-        #         wall_pid.error = 0; wall_pid.integ = 0
-        #         continue
-
-        #     prox_right = (ea * prox_values[0] + eb * prox_values[1] + ec * prox_values[2] + ed * prox_values[3]) / (ea + eb + ec + ed)
-        #     prox_left = (ea * prox_values[7] + eb * prox_values[6] + ec * prox_values[5] + ed * prox_values[4]) / (ea + eb + ec + ed)
+            # Check if we have arrived at the block
+            tof_distance = r.get_tof()
+            prox_values = r.get_smooth_prox()
             
-        #     left_speed = NORM_SPEED - ((NORM_SPEED * prox_right) / PROX_TH)
-        #     right_speed = NORM_SPEED - ((NORM_SPEED * prox_left) / PROX_TH)
-        #     r.set_speed(left_speed, right_speed)
-            
-        # # -------------------------------------------------------------
-        # # --- MODE: LOVER MODE (Object Lover based on Color) ----------
-        # # -------------------------------------------------------------
-        # elif mode == LOVER:
-        #     img = np.array(r.get_camera())
-        #     color_detections = r.get_colordetection(img)
-            
-        #     # Keep tracking the color we locked onto
-        #     label_to_find = "Red" if target_color == 2 else "Green"
-        #     valid_targets = [d for d in color_detections if d.label == label_to_find]
-            
-        #     if not valid_targets:
-        #         print("Lost visual on goal. Returning to EXPLORER.")
-        #         mode = EXPLORER
-        #         continue
+            if tof_distance < TARGET_DISTANCE: # or prox_values[0] > 150 or prox_values[7] > 150:
+                print(f"Goal Reached! Mapping {label_to_find} block and circumnavigating.")
+                map_block_in_front(tx, ty, yaw, target_color)
                 
-        #     target = max(valid_targets, key=lambda d: d.area)
-            
-        #     # Check if we have arrived at the block
-        #     tof_distance = r.get_tof()
-        #     prox_values = r.get_smooth_prox()
-        #     TARGET_DISTANCE = 60 # 6 cm
-            
-        #     if tof_distance < TARGET_DISTANCE: # or prox_values[0] > 150 or prox_values[7] > 150:
-        #         print(f"Goal Reached! Mapping {label_to_find} block and circumnavigating.")
-        #         map_block_in_front(tx, ty, yaw, target_color)
-                
-        #         # Switch to wall follower to go around the goal block
-        #         mode = WALL_FOLLOWER
-        #         wall_follow_start_time = time.time()
-        #         wall_pid.error = 0; wall_pid.integ = 0
-        #         continue
+                # Switch to wall follower to go around the goal block
+                mode = WALL_FOLLOWER
+                wall_follow_start_time = time.time()
+                wall_pid.error = 0; wall_pid.integ = 0
+                continue
 
-        #     # TRUE BRAITENBERG MATH (Continuous, No Dead-band)
-        #     camera_center = img.shape[1] / 2
+            # OBJECT LOVER (Continuous, No Dead-band)
+            camera_center = img.shape[1] / 2
             
-        #     ANGULAR_GAIN = 1.2
-        #     DISTANCE_GAIN = 2.0
+            distance_ds = ((tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE) * DISTANCE_GAIN
+            angular_ds = ((target.x_center - camera_center) / camera_center) * ANGULAR_GAIN
             
-        #     distance_ds = ((tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE) * DISTANCE_GAIN
-        #     angular_ds = ((target.x_center - camera_center) / camera_center) * ANGULAR_GAIN
+            left_speed = distance_ds + angular_ds
+            right_speed = distance_ds - angular_ds
             
-        #     left_speed = distance_ds + angular_ds
-        #     right_speed = distance_ds - angular_ds
+            # Cap speeds to safe limits
+            left_speed = max(min(left_speed, 4.0), -4.0)
+            right_speed = max(min(right_speed, 4.0), -4.0)
             
-        #     # Cap speeds to safe limits
-        #     left_speed = max(min(left_speed, 4.0), -4.0)
-        #     right_speed = max(min(right_speed, 4.0), -4.0)
-            
-        #     r.set_speed(left_speed, right_speed)    
+            r.set_speed(left_speed, right_speed)    
             
         # -------------------------------------------------------------
         # --- MODE: WALL_FOLLOWER MODE (Circumnavigating Obstacles) ---
