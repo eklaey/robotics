@@ -73,9 +73,9 @@ PID_MAX_DS = 1.5
 PID_WALL_TARGET = 200
 wa, wb, wc, wd = 4, 2, 1, 0
 
-DEFAULT_DS_OFFSET = 0.1 #originally 0.05, 207 0.1
-K = 0.0085              #originally 0.0055, 207 0.0085
-T_D = 0.3         #originally 0.2, 207 0.3
+DEFAULT_DS_OFFSET = 0.05 #originally 0.05, 207 0.1
+K = 0.0055              #originally 0.0055, 207 0.0085
+T_D = 0.2         #originally 0.2, 207 0.3
 T_I = 9999999999
 
 wall_pid = PID(K, T_I, T_D)
@@ -84,10 +84,10 @@ wall_pid = PID(K, T_I, T_D)
 resync_interruption_start = None
 
 # Wall Following timeouts and thresholds
-WALL_DETECTION_THRESHOLD = 200
+WALL_DETECTION_THRESHOLD = 150
 wall_following_side = "RIGHT"
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 30.0
+WALL_FOLLOW_DURATION = 20.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 1.0 
 wall_exit_time = 0
@@ -393,6 +393,11 @@ while r.go_on():
                 reds = [d for d in detections if d.label == "Red"]
                 greens = [d for d in detections if d.label == "Green"]
                 
+                if red_goal_grid is not None:
+                    reds = []
+                if green_goal_grid is not None:
+                    greens = []
+                
                 # Pick the largest area detected
                 if reds and greens:
                     best_red = max(reds, key=lambda d: d.area)
@@ -419,7 +424,6 @@ while r.go_on():
             
             if valid_target_found:
                 print(f"Goal detected! Switching to LOVER mode ({target.label}).")
-                num_goals_found += 1
                 mode = LOVER
                 continue
 
@@ -427,8 +431,8 @@ while r.go_on():
             prox_values = get_smoothed_prox()
             
             if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
-                (   (prox_values[0]) > WALL_DETECTION_THRESHOLD or 
-                    (prox_values[7]) > WALL_DETECTION_THRESHOLD)):
+                (   np.mean(prox_values[0] + prox_values[1]) > WALL_DETECTION_THRESHOLD or 
+                    np.mean(prox_values[7] + prox_values[6]) > WALL_DETECTION_THRESHOLD)):
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
@@ -437,7 +441,7 @@ while r.go_on():
                 wall_pid.integ = 0
                 
                 # Compare front-left sensors vs front-right sensors
-                if (prox_values[7] + prox_values[6]) > (prox_values[0] + prox_values[1]):
+                if (np.mean(prox_values[7] + prox_values[6])) > (np.mean(prox_values[0] + prox_values[1])):
                     wall_following_side = "LEFT"
                 else:
                     wall_following_side = "RIGHT"
@@ -503,6 +507,14 @@ while r.go_on():
                 # Map and save location of the block on the grid
                 map_block_in_front(tx, ty, yaw, target_color)
                 
+                # Save specific goal coordinates for navigation
+                if target_color == 2 and red_goal_grid is None:
+                    red_goal_grid = (bx, by)
+                    num_goals_found += 1
+                elif target_color == 3 and green_goal_grid is None:
+                    green_goal_grid = (bx, by)
+                    num_goals_found += 1
+                
                 # --- PHASE 2 TRIGGER CHECK ---
                 if red_goal_grid is not None and green_goal_grid is not None:
                     print("+++ BOTH GOALS FOUND! INITIATING PHASE 2 NAVIGATION +++")
@@ -553,7 +565,8 @@ while r.go_on():
                 wall_exit_time = time.time()
                 continue
             
-            prox_values = get_smoothed_prox()
+            #prox_values = get_smoothed_prox()
+            prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
             
             # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
             if max(prox_values) < 20:

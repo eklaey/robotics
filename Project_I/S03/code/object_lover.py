@@ -22,7 +22,7 @@ def find_best_red_color(color_detections):
     return max(red_colors, key=lambda d: d.area)
 
 # Main Object LOVER Program
-MY_IP = '192.168.2.208'
+MY_IP = '192.168.2.202'
 robot = wrapper.get_robot(MY_IP)
 
 # Initialization of sensors/model and parameters
@@ -40,11 +40,11 @@ target = None
 TARGET_DISTANCE = 135   # 10 cm
 MAX_SPEED = 2.0
 
-ANGULAR_GAIN = 0.5
-DISTANCE_GAIN = 4    
+ANGULAR_GAIN = 1.0
+DISTANCE_GAIN = 2.0    
 THRESHOLD = 0.25  # Threshold for deciding when to switch between angular and distance control
 
-OBJECT_DETECTION = True
+OBJECT_DETECTION = False
 COLOR_DETECTION = True
 
 while robot.go_on():
@@ -73,18 +73,28 @@ while robot.go_on():
     # ds for keeping target at desired distance (linear control)
     # Use TOF for distance control as prox sensors are unreliable at TARGET_DISTANCE
     tof_distance = robot.get_tof()
-    distance_error = (tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE
-    distance_ds = DISTANCE_GAIN * distance_error
+    # distance_error = (tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE
+    # distance_ds = DISTANCE_GAIN * distance_error
 
-    if np.abs(x_error) < THRESHOLD and np.abs(distance_error) > THRESHOLD:
-        # If target is centered, use distance control to move forward/backward with angular correction
-        left_speed = clamp(distance_ds + DISTANCE_GAIN * angular_ds, MAX_SPEED)
-        right_speed = clamp(distance_ds - DISTANCE_GAIN * angular_ds, MAX_SPEED)
-    else:
-        # If target is not centered, use angular control to rotate towards it with no distance correction
-        left_speed = clamp(angular_ds, MAX_SPEED)
-        right_speed = clamp(-angular_ds, MAX_SPEED)
-        
+    # if np.abs(x_error) < THRESHOLD and np.abs(distance_error) > THRESHOLD:
+    #     # If target is centered, use distance control to move forward/backward with angular correction
+    #     left_speed = clamp(distance_ds + DISTANCE_GAIN * angular_ds, MAX_SPEED)
+    #     right_speed = clamp(distance_ds - DISTANCE_GAIN * angular_ds, MAX_SPEED)
+    # else:
+    #     # If target is not centered, use angular control to rotate towards it with no distance correction
+    #     left_speed = clamp(angular_ds, MAX_SPEED)
+    #     right_speed = clamp(-angular_ds, MAX_SPEED)
+    
+    distance_ds = ((tof_distance - TARGET_DISTANCE) / TARGET_DISTANCE) * DISTANCE_GAIN
+    angular_ds = ((target.x_center - camera_center) / camera_center) * ANGULAR_GAIN
+    
+    left_speed = distance_ds + angular_ds
+    right_speed = distance_ds - angular_ds
+    
+    # Clamp speeds to max
+    left_speed = max(min(left_speed, 2 * MAX_SPEED), -2 * MAX_SPEED)
+    right_speed = max(min(right_speed, 2 * MAX_SPEED), -2 * MAX_SPEED)
+
     robot.set_speed(left_speed, right_speed)
 
 robot.clean_up()
