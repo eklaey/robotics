@@ -58,7 +58,7 @@ last_resync = 0
 has_not_resync = True
 resync_start_time = None
 RESYNC_DURATION = 7.0
-RECALIBRATION_TIMEOUT = 29.0
+RECALIBRATION_TIMEOUT = 19.0
 
 # Geofencing
 BUFFER = 0.1
@@ -73,9 +73,9 @@ PID_MAX_DS = 1.5
 PID_WALL_TARGET = 200
 wa, wb, wc, wd = 4, 2, 1, 0
 
-DEFAULT_DS_OFFSET = 0.05 #originally 0.05, 207 0.1
-K = 0.0055              #originally 0.0055, 207 0.0085
-T_D = 0.2         #originally 0.2, 207 0.3
+DEFAULT_DS_OFFSET = 0.05 #202 0.05, 207 0.1
+K = 0.0055              #202 0.0055, 207 0.0085
+T_D = 0.2         #202 0.2, 207 0.3
 T_I = 9999999999
 
 wall_pid = PID(K, T_I, T_D)
@@ -91,7 +91,7 @@ WALL_FOLLOW_DURATION = 20.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 1.0 
 wall_exit_time = 0
-WALL_EXIT_TIMEOUT = 3.0
+WALL_EXIT_TIMEOUT = 1.0
 
 # Object LOVER parameters
 TARGET_DISTANCE = 60
@@ -120,6 +120,7 @@ LOVER = "LOVER"
 EXPLORER = "EXPLORER"
 WALL_FOLLOWER = "WALL_FOLLOWER"
 PATH_FINDER = "PATHFINDER"
+GOAL = "GOAL"
 
 mode = EXPLORER
 
@@ -199,6 +200,8 @@ def image_letterboxed():
     masked_img[:, 0:y_start, :] = 0
     masked_img[:, y_end:height, :] = 0
     return masked_img
+def clamp(value):
+    return max(min(value, 2 * NORM_SPEED), -2 * NORM_SPEED)
 def map_block_in_front(tx, ty, yaw, block_type):
     """ Projects block onto map from the robot's center and paints a 3x3 patch on the grid """
     block_x = tx + 0.05 * math.cos(yaw)
@@ -237,6 +240,45 @@ def calculate_return_path(start_grid, target_grid, current_grid):
     except nx.NetworkXNoPath:
         print("CRITICAL: No valid path found through the maze!")
         return []
+def update_leds(state, mode, target_color, wall_following_side, num_goals_found):
+    """
+    state: current state (BASE or RE_SYNC)
+    mode: current mode (EXPLORER, LOVER, WALL_FOLLOWER)
+    target_color: 2 for Red, 3 for Green (None otherwise)
+    wall_following_side: "LEFT" or "RIGHT"
+    num_goals_found: integer count
+    """
+    # 1. Reset all LEDs to off (0) or default state first
+    r.disable_all_led()
+
+    # 2. Logic for RE_SYNC
+    if state == "RE_SYNC":
+        r.enable_led(0)
+        r.enable_led(4)
+        return # Skip other logic
+
+    # 3. Logic for Goal Reached (Priority)
+    if mode == "GOAL":
+        r.enable_led(0)
+        r.enable_led(2)
+        r.enable_led(4)
+        r.enable_led(6)
+        r.enable_body_led(255, 255, 0) # Yellow body LED
+        return
+
+    # 4. Logic for WALL_FOLLOWER
+    if mode == "WALL_FOLLOWER":
+        if wall_following_side == "LEFT":
+            r.enable_led(6) # LED 6 for Left
+        else:
+            r.enable_led(2) # LED 2 for Right
+
+    # 5. Logic for LOVER (Color indication)
+    if mode == "LOVER" and target_color is not None:
+        if target_color == 2: # Red
+            r.enable_led(3, 255, 0, 0)
+        elif target_color == 3: # Green
+            r.enable_led(3, 0, 255, 0)
                 
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
@@ -323,8 +365,10 @@ while r.go_on():
             ix, iy = world_to_grid(x, y)
             set_cell_if_empty(grid, ix, iy, 1)
 
-
     ############## robot explores and recalibrates the position ############
+    update_leds(state, mode, target_color if 'target_color' in locals() else None, 
+                wall_following_side, num_goals_found)
+    
     if state == BASE:
 
         if time.time() - last_resync > RECALIBRATION_TIMEOUT:
@@ -463,8 +507,8 @@ while r.go_on():
             right_speed = NORM_SPEED - ds_right
             
             #Clamp speeds to max
-            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
-            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            left_speed = clamp(left_speed)
+            right_speed = clamp(right_speed)
             
             r.set_speed(left_speed, right_speed)
             
@@ -549,8 +593,8 @@ while r.go_on():
             right_speed = distance_ds - angular_ds
             
             # Clamp speeds to max
-            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
-            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            left_speed = clamp(left_speed)
+            right_speed = clamp(right_speed)
             
             r.set_speed(left_speed, right_speed)    
             
@@ -616,8 +660,8 @@ while r.go_on():
                     right_speed = -ds
 
             # Clamp speeds to max
-            left_speed = max(min(left_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
-            right_speed = max(min(right_speed, 2 * NORM_SPEED), -2 * NORM_SPEED)
+            left_speed = clamp(left_speed)
+            right_speed = clamp(right_speed)
 
             r.set_speed(left_speed, right_speed)
         
@@ -626,9 +670,18 @@ while r.go_on():
         # -------------------------------------------------------------
         elif mode == PATH_FINDER:
             if not planned_path_world:
-                print("DESTINATION REACHED! Phase 2 Complete.")
-                r.set_speed(0, 0)
-                # You can optionally break the while loop here to end the script
+                # --- PHASE 3: ROBUST FINAL APPROACH CONFIRMATION ---
+                tof_distance = r.get_tof()
+                prox_values = get_smoothed_prox()
+                
+                # Check if hardware sensors confirm we are touching/facing the destination block
+                if tof_distance < TARGET_DISTANCE or prox_values[0] > 450 or prox_values[7] > 450:
+                    print("+++ GOAL REACHED ROBUSTLY! Phase 3 Complete +++")
+                    mode = GOAL # Transition to final stopped state
+                else:
+                    # If odometry claims we arrived but sensors don't see the block yet, 
+                    # creep slowly forward straight ahead until we hit it robustly.
+                    r.set_speed(NORM_SPEED * 0.4, NORM_SPEED * 0.4)
                 continue
                 
             # Get the current waypoint
@@ -654,10 +707,19 @@ while r.go_on():
             # Drive forward while turning
             # We slow down the base speed so it doesn't overshoot waypoints
             nav_speed = NORM_SPEED * 0.8 
-            left_speed = max(min(nav_speed - ds, 4.0), -4.0)
-            right_speed = max(min(nav_speed + ds, 4.0), -4.0)
+            left_speed = clamp(nav_speed - ds)
+            right_speed = clamp(nav_speed + ds)
             
             r.set_speed(left_speed, right_speed)
+            
+        # -------------------------------------------------------------
+        # --- MODE: GOAL MODE (Phase 3 Stopped Completion State) ------
+        # -------------------------------------------------------------
+        elif mode == GOAL:
+            # Safely hold position and maintain full structural LED signaling loop
+            r.set_speed(0, 0)
+            update_leds(state, mode, target_color, wall_following_side, num_goals_found)
+            break # End the script since we have completed the task
             
 
     ########### RESYNC ############
