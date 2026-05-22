@@ -58,8 +58,8 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 5.0 #7.0
-RECALIBRATION_TIMEOUT = 60.0 #19.0
+RESYNC_DURATION = 0.0 #7.0
+RECALIBRATION_TIMEOUT = 25.0 #19.0
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -113,6 +113,8 @@ num_goals_found = 0
 red_goal_grid = None
 green_goal_grid = None
 planned_path_world = [] # Will hold the physical (wx, wy) coordinates to drive to
+
+Kp_nav = 1.5
 
 ###### simple state machine having basic and resync behaviors ##########
 BASE = "BASE"
@@ -213,9 +215,9 @@ def map_block_in_front(tx, ty, yaw, block_type):
     block_y = ty + 0.05 * math.sin(yaw)
     bx, by = world_to_grid(block_x, block_y)
     
-    # Paint a 3x3 grid patch so it is highly visible on the map
-    for i in range(-1, 2):
-        for j in range(-1, 2):
+    # Paint grid patch so it is highly visible on the map (5x5)
+    for i in range(-2, 3):
+        for j in range(-2, 3):
             if 0 <= bx+i < grid.shape[1] and 0 <= by+j < grid.shape[0]:
                 grid[by+j, bx+i] = block_type
 def calculate_return_path(start_grid, target_grid, current_grid):
@@ -293,7 +295,9 @@ def update_leds(state, mode, target_color, wall_following_side, num_goals_found)
         r.enable_led(4)
         return
     
-    # EXPLORER mode: LEDs already disabled by the reset above
+    # Logic for EXPLORER
+    if mode == "EXPLORER":
+        r.enable_led(0)
                 
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
@@ -462,20 +466,23 @@ while r.go_on():
             # Filter for available Red and Green targets
             target = None
             target_color = None
-            has_goal_nearby = False
+            has_red_goal_nearby = False
+            has_green_goal_nearby = False
             
             if detections:
                 reds = [d for d in detections if d.label == "Red"]
                 greens = [d for d in detections if d.label == "Green"]
                 
-                # Check if we have any available goals in frame
-                has_goal_nearby = bool(reds or greens)
-                
                 # Remove already-discovered goals
                 if red_goal_grid is not None:
                     reds = []
+
                 if green_goal_grid is not None:
                     greens = []
+
+                # ONLY NOW determine whether goals are nearby
+                has_red_goal_nearby = bool(reds)
+                has_green_goal_nearby = bool(greens)
                 
                 # Pick the largest available target
                 if reds and greens:
@@ -500,7 +507,7 @@ while r.go_on():
             # --- PRIORITY 2: Initiate wall following on obstacle (if no goal nearby) ---
             if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
                 not((time.time() - discovery_exit_time) < DISCOVERY_COOLDOWN) and
-                not has_goal_nearby and
+                not has_red_goal_nearby and not has_green_goal_nearby and
                 (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
                  np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
                 
@@ -603,10 +610,6 @@ while r.go_on():
                 mode = EXPLORER
                 discovery_exit_time = time.time()
                 continue
-            # print("Lover timeout: Could not reach block. Resuming Explorer mode...")
-            # mode = EXPLORER
-            # discovery_exit_time = time.time()
-            # continue
             
             img = image_letterboxed()
             if USE_COLOR_DETECTION:
@@ -729,7 +732,6 @@ while r.go_on():
             angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
             
             # Steer towards the waypoint (Proportional steering)
-            Kp_nav = 1.5
             ds = Kp_nav * angle_error
             
             # Drive forward while turning
@@ -746,9 +748,7 @@ while r.go_on():
         elif mode == GOAL:
             # Safely hold position and maintain full structural LED signaling loop
             r.set_speed(0, 0)
-            update_leds(state, mode, target_color, wall_following_side, num_goals_found)
-            break # End the script since we have completed the task
-            
+            continue            
 
     ########### RESYNC ############
     elif state == RE_SYNC:
@@ -785,13 +785,13 @@ while r.go_on():
             # Shift the time counters forward, effectively "freezing" the countdown during resync
             if wall_follow_start_time != 0:
                 wall_follow_start_time += interruption_duration
-            elif lost_wall_start_time != 0:
+            if lost_wall_start_time != 0:
                 lost_wall_start_time += interruption_duration
-            elif wall_exit_time != 0:
+            if wall_exit_time != 0:
                 wall_exit_time += interruption_duration
-            elif discovery_exit_time != 0:
+            if discovery_exit_time != 0:
                 discovery_exit_time += interruption_duration
-            elif lover_start_time != 0:
+            if lover_start_time != 0:
                 lover_start_time += interruption_duration
                 
             resync_interruption_start = None # Reset tracker
