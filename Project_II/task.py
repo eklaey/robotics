@@ -58,7 +58,7 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 0.0 #7.0
+RESYNC_DURATION = 5.0 #7.0
 RECALIBRATION_TIMEOUT = 25.0 #19.0
 
 # Geofencing
@@ -84,10 +84,10 @@ wall_pid = PID(K, T_I, T_D)
 resync_interruption_start = None
 
 # Wall Following timeouts and thresholds
-WALL_DETECTION_THRESHOLD = PID_WALL_TARGET
-wall_following_side = "RIGHT"
+WALL_DETECTION_THRESHOLD = PID_WALL_TARGET - 75 # Threshold to detect a wall and trigger wall following (should be less than PID_WALL_TARGET to avoid oscillation and collision with wall)
+wall_following_side = None
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 20.0
+WALL_FOLLOW_DURATION = 25.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
@@ -476,10 +476,8 @@ while r.go_on():
                 # Remove already-discovered goals
                 if red_goal_grid is not None:
                     reds = []
-
                 if green_goal_grid is not None:
                     greens = []
-
                 # ONLY NOW determine whether goals are nearby
                 has_red_goal_nearby = bool(reds)
                 has_green_goal_nearby = bool(greens)
@@ -510,6 +508,7 @@ while r.go_on():
                 not has_red_goal_nearby and not has_green_goal_nearby and
                 (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
                  np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
+                # (prox_values[0] > WALL_DETECTION_THRESHOLD or prox_values[7] > WALL_DETECTION_THRESHOLD)):
                 
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
@@ -550,11 +549,18 @@ while r.go_on():
             prox_values = get_smoothed_prox()
             #prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
             
-            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
-            if max(prox_values) < 20:
+            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer --> E-puck sensors: 0, 1, 2, 3 are Right side; 4, 5, 6, 7 are Left side
+            if wall_following_side == 'LEFT':
+                side_sensors = prox_values[5:7]
+            elif wall_following_side == 'RIGHT':
+                side_sensors = prox_values[1:3]
+            else:
+                # Fallback/Safety: If side is unknown, check front sensors
+                side_sensors = prox_values
+                
+            if np.max(side_sensors) < 20:
                 if lost_wall_start_time is None:
                     lost_wall_start_time = time.time()
-                
                 elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
                     print("Lost wall confirmed. Returning to Explorer...")
                     mode = EXPLORER
