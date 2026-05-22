@@ -58,8 +58,8 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 5.0 #7.0
-RECALIBRATION_TIMEOUT = 25.0 #19.0
+RESYNC_DURATION = 10.0 #7.0
+RECALIBRATION_TIMEOUT = 20.0 #19.0
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -105,7 +105,7 @@ DISCOVERY_COOLDOWN = 10.0 # Seconds to stay in EXPLORER after reaching a goal
 discovery_exit_time = 0
 
 USE_COLOR_DETECTION = True
-COLOR_DETECTION_THRESHOLD = 1000 # Minimum area of color blob to be considered goal, was working with 1500
+COLOR_DETECTION_THRESHOLD = 800 # Minimum area of color blob to be considered goal, was working with 1500
 DETECTION_CONFIDENCE = 0.9
 
 # Navigation and Mapping
@@ -225,7 +225,19 @@ def calculate_return_path(start_grid, target_grid, current_grid):
     # Create a graph where every grid cell is connected to its Up/Down/Left/Right neighbors
     G = nx.grid_2d_graph(current_grid.shape[0], current_grid.shape[1])
     
+    # Add diagonal edges (8-way connectivity)
+    for y in range(current_grid.shape[0] - 1):
+        for x in range(current_grid.shape[1] - 1):
+            G.add_edge((y, x), (y + 1, x + 1), weight=1.414) # Diagonal \
+            G.add_edge((y + 1, x), (y, x + 1), weight=1.414) # Diagonal /
+            
+    # Assign weight=1.0 to the original straight up/down/left/right edges
+    for u, v in G.edges():
+        if 'weight' not in G[u][v]:
+            G[u][v]['weight'] = 1.0
+            
     # Remove all obstacle cells (4) so the path cannot go through them
+    # Note: Removing a node automatically destroys its diagonal edges too!
     for y in range(current_grid.shape[0]):
         for x in range(current_grid.shape[1]):
             if current_grid[y, x] == 4:
@@ -233,8 +245,10 @@ def calculate_return_path(start_grid, target_grid, current_grid):
                     G.remove_node((y, x))
     try:
         # Find the shortest path (Dijkstra algorithm)
-        # NetworkX grid nodes are represented as (y, x)
-        path = nx.shortest_path(G, source=(start_grid[1], start_grid[0]), target=(target_grid[1], target_grid[0]))
+        # --- FIX: We now tell the algorithm to factor in the edge 'weight' ---
+        path = nx.shortest_path(G, source=(start_grid[1], start_grid[0]), 
+                                   target=(target_grid[1], target_grid[0]), 
+                                   weight='weight')
         
         # Convert the (y, x) grid path back into physical (wx, wy) coordinates
         world_path = []
