@@ -58,15 +58,15 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 7.0
-RECALIBRATION_TIMEOUT = 59.0
+RESYNC_DURATION = 5.0 #7.0
+RECALIBRATION_TIMEOUT = 60.0 #19.0
 
 # Geofencing
-BUFFER = 0.1
+BUFFER = 0.1 # Safe distance from the border to trigger corrective action
 Kp_fence = 0.5
 
 # Braitenberg EXPLORER
-PROX_TH = 250
+PROX_TH = 125 # 250
 ea, eb, ec, ed = 1, 2, 2, -1
 
 # PID Parameters for Wall Following
@@ -87,20 +87,25 @@ resync_interruption_start = None
 WALL_DETECTION_THRESHOLD = PID_WALL_TARGET
 wall_following_side = "RIGHT"
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 60.0
+WALL_FOLLOW_DURATION = 20.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
 WALL_EXIT_TIMEOUT = 1.0
+
+lover_start_time = 0
+LOVER_TIMEOUT = 15.0  # Max time to approach a goal before giving up
 
 # Object LOVER parameters
 TARGET_DISTANCE = 60
 ANGULAR_GAIN = 1.2
 DISTANCE_GAIN = 1.0
 
-USE_COLOR_DETECTION = True
-COLOR_DETECTION_THRESHOLD = 750 # Minimum area of color blob to be considered goal
+DISCOVERY_COOLDOWN = 10.0 # Seconds to stay in EXPLORER after reaching a goal
+discovery_exit_time = 0
 
+USE_COLOR_DETECTION = True
+COLOR_DETECTION_THRESHOLD = 1000 # Minimum area of color blob to be considered goal, was working with 1500
 DETECTION_CONFIDENCE = 0.9
 
 # Navigation and Mapping
@@ -248,37 +253,47 @@ def update_leds(state, mode, target_color, wall_following_side, num_goals_found)
     wall_following_side: "LEFT" or "RIGHT"
     num_goals_found: integer count
     """
-    # 1. Reset all LEDs to off (0) or default state first
+    # Always reset LEDs first
     r.disable_all_led()
+    r.disable_body_led()
 
-    # 2. Logic for RE_SYNC
+    # Logic for RE_SYNC (state priority)
     if state == "RE_SYNC":
-        r.enable_led(0)
-        r.enable_led(4)
-        return # Skip other logic
+        r.enable_led(3, 0, 0, 100)
+        return
 
-    # 3. Logic for Goal Reached (Priority)
+    # Logic for Goal Reached (mode priority)
     if mode == "GOAL":
         r.enable_led(0)
         r.enable_led(2)
         r.enable_led(4)
         r.enable_led(6)
-        r.enable_body_led(255, 255, 0) # Yellow body LED
+        r.enable_body_led()
         return
 
-    # 4. Logic for WALL_FOLLOWER
+    # Logic for WALL_FOLLOWER
     if mode == "WALL_FOLLOWER":
         if wall_following_side == "LEFT":
-            r.enable_led(6) # LED 6 for Left
+            r.enable_led(6)
         else:
-            r.enable_led(2) # LED 2 for Right
+            r.enable_led(2)
+        return
 
-    # 5. Logic for LOVER (Color indication)
+    # Logic for LOVER (Color indication)
     if mode == "LOVER" and target_color is not None:
-        if target_color == 2: # Red
-            r.enable_led(3, 255, 0, 0)
-        elif target_color == 3: # Green
-            r.enable_led(3, 0, 255, 0)
+        if target_color == 2:
+            r.enable_led(3, 100, 0, 0)
+        elif target_color == 3:
+            r.enable_led(3, 0, 100, 0)
+        return
+
+    # Logic for PATH_FINDER
+    if mode == "PATH_FINDER":
+        r.enable_led(0)
+        r.enable_led(4)
+        return
+    
+    # EXPLORER mode: LEDs already disabled by the reset above
                 
 ###################### MAP PREPARATION #####################################
 print("Waiting for valid ArUco pose to initialize map...")
@@ -296,16 +311,16 @@ while tx is None or ty is None:
         time.sleep(0.1) # Wait slightly for the camera thread to catch up
 
 # Now that we have a real position, define borders
-x_min = tx - 0.55
-x_max = tx + 0.55
-y_min = ty - 0.50
-y_max = ty + 0.50
+x_min = tx - 0.45   # 0.45
+x_max = tx + 0.45   # 0.45
+y_min = ty - 0.40   # 0.30
+y_max = ty + 0.40   # 0.30
 
 # create grid map
-nx = int((x_max - x_min) / resolution)
-ny = int((y_max - y_min) / resolution)
-grid = np.zeros((ny, nx))
-print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}]")
+grid_width = int((x_max - x_min) / resolution)
+grid_height = int((y_max - y_min) / resolution)
+grid = np.zeros((grid_height, grid_width))
+print(f"Map initialized successfully: x[{x_min:.2f}, {x_max:.2f}] y[{y_min:.2f}, {y_max:.2f}] grid[{grid_width}x{grid_height}]")
 
 ###################### SENSOR & CAMERA CALIBRATION ###################################
 r.init_sensors()
@@ -351,20 +366,11 @@ while r.go_on():
         continue
 
     # get tracking infos
-    # if frame_count % 10 == 0:
-    #     tx, ty, yaw = update_pose()
-    # else:
-    #     tx, ty, yaw = last_tx, last_ty, last_yaw
     tx, ty, yaw = update_pose()
     if tx is None:
         continue
 
     ## memorize path taken by robot
-    # if frame_count % 2 ==0 and tx is not None:
-    #     path.append((tx, ty))
-    #     for x, y in path:
-    #         ix, iy = world_to_grid(x, y)
-    #         set_cell_if_empty(grid, ix, iy, 1)
     if tx is not None:
         ix, iy = world_to_grid(tx, ty)
         
@@ -433,7 +439,6 @@ while r.go_on():
                 right_speed = NORM_SPEED + ds
 
         if in_danger_zone:
-            #print("Warning: Approaching boundary of map!")
             r.enable_all_led()
             r.disable_all_led()
             r.set_speed(left_speed, right_speed)
@@ -443,94 +448,84 @@ while r.go_on():
         # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
         # -------------------------------------------------------------
         if mode == EXPLORER:
+            # Get all sensor data once
             img = image_letterboxed()
+            prox_values = get_smoothed_prox()
+            tof_distance = r.get_tof()
             
+            # Process camera detections
             if USE_COLOR_DETECTION:
                 detections = r.get_colordetection(img)
-                red_label, green_label = "Red", "Green"
             else:
-                # detections = r.get_detection(img, conf_thresh=DETECTION_CONFIDENCE)
-                red_label, green_label = "Red Block", "Green Block"   
-                         
-            # Filter for Red and Green
+                detections = None
+            
+            # Filter for available Red and Green targets
             target = None
             target_color = None
+            has_goal_nearby = False
+            
             if detections:
                 reds = [d for d in detections if d.label == "Red"]
                 greens = [d for d in detections if d.label == "Green"]
                 
+                # Check if we have any available goals in frame
+                has_goal_nearby = bool(reds or greens)
+                
+                # Remove already-discovered goals
                 if red_goal_grid is not None:
                     reds = []
                 if green_goal_grid is not None:
                     greens = []
                 
-                # Pick the largest area detected
+                # Pick the largest available target
                 if reds and greens:
                     best_red = max(reds, key=lambda d: d.area)
                     best_green = max(greens, key=lambda d: d.area)
                     if best_red.area > best_green.area:
-                        target, target_color = best_red, 2 # 2 is Red in our map
+                        target, target_color = best_red, 2
                     else:
-                        target, target_color = best_green, 3 # 3 is Green in our map
+                        target, target_color = best_green, 3
                 elif reds:
                     target, target_color = max(reds, key=lambda d: d.area), 2
                 elif greens:
                     target, target_color = max(greens, key=lambda d: d.area), 3
-
-            # If a significant color blob is seen, switch to LOVER
-            valid_target_found = False
-            if target is not None:
-                if USE_COLOR_DETECTION:
-                    # Color blobs must pass the area threshold
-                    if target.area > COLOR_DETECTION_THRESHOLD:
-                        valid_target_found = True
-                else:
-                    # Object detection already passed the confidence threshold in the API call
-                    valid_target_found = True
             
-            if valid_target_found:
+            # --- PRIORITY 1: Try to approach detected goal ---
+            if target is not None and target.area > COLOR_DETECTION_THRESHOLD:
                 print(f"Goal detected! Switching to LOVER mode ({target.label}).")
                 mode = LOVER
+                lover_start_time = time.time()
                 continue
-
-            # Wall-following Braitenberg Explorer in case no color detected            
-            prox_values = get_smoothed_prox()
             
+            # --- PRIORITY 2: Initiate wall following on obstacle (if no goal nearby) ---
             if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
-                (   np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
-                    np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
+                not((time.time() - discovery_exit_time) < DISCOVERY_COOLDOWN) and
+                not has_goal_nearby and
+                (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
+                 np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
+                
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
                 wall_follow_start_time = time.time()
-                # Clear PID memory
+                # Reset PID state to avoid erratic behavior from old integral/derivative values
                 wall_pid.error = 0
                 wall_pid.integ = 0
                 
-                # Compare front-left sensors vs front-right sensors
-                if (np.mean([prox_values[7], prox_values[6]])) > (np.mean([prox_values[0], prox_values[1]])):
-                    wall_following_side = "LEFT"
-                else:
-                    wall_following_side = "RIGHT"
-                    
+                # Determine wall side based on sensor readings
+                wall_following_side = "LEFT" if np.mean([prox_values[7], prox_values[6]]) > np.mean([prox_values[0], prox_values[1]]) else "RIGHT"
                 print(f"Following wall on the {wall_following_side} side.")
-                
                 r.set_speed(0, 0)
                 continue
-
-            # Braitenberg exploration weighted average sensor calculations
+            
+            # --- PRIORITY 3: Default Braitenberg exploration ---
             prox_right = (ea * prox_values[0] + eb * prox_values[1] + ec * prox_values[2] + ed * prox_values[3]) / (ea + eb + ec + ed)
             prox_left = (ea * prox_values[7] + eb * prox_values[6] + ec * prox_values[5] + ed * prox_values[4]) / (ea + eb + ec + ed)
             
             ds_left = (NORM_SPEED * prox_right) / PROX_TH   
             ds_right = (NORM_SPEED * prox_left) / PROX_TH  
-             
-            # Calculate individual motor speeds: s = s0 + ds
-            left_speed = NORM_SPEED - ds_left
-            right_speed = NORM_SPEED - ds_right
             
-            #Clamp speeds to max
-            left_speed = clamp(left_speed)
-            right_speed = clamp(right_speed)
+            left_speed = clamp(NORM_SPEED - ds_left)
+            right_speed = clamp(NORM_SPEED - ds_right)
             
             r.set_speed(left_speed, right_speed)
             
@@ -550,9 +545,6 @@ while r.go_on():
             
             # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer
             if max(prox_values) < 20:
-                # print("Lost wall contact. Returning to Explorer...")
-                # mode = EXPLORER
-                # continue
                 if lost_wall_start_time is None:
                     lost_wall_start_time = time.time()
                 
@@ -605,6 +597,17 @@ while r.go_on():
         # --- MODE: LOVER MODE (Object Lover based on Color) ----------
         # -------------------------------------------------------------
         elif mode == LOVER:
+            # Safety timeout: If we have been trying to approach this block for too long, break back to explorer to avoid getting stuck
+            if time.time() - lover_start_time > LOVER_TIMEOUT:
+                print("Lover timeout: Could not reach block. Resuming Explorer mode...")
+                mode = EXPLORER
+                discovery_exit_time = time.time()
+                continue
+            # print("Lover timeout: Could not reach block. Resuming Explorer mode...")
+            # mode = EXPLORER
+            # discovery_exit_time = time.time()
+            # continue
+            
             img = image_letterboxed()
             if USE_COLOR_DETECTION:
                 detections = r.get_colordetection(img)
@@ -640,6 +643,11 @@ while r.go_on():
                 # Map and save location of the block on the grid
                 map_block_in_front(tx, ty, yaw, target_color)
                 
+                # Reset wall-following timers to avoid hysteresis
+                wall_follow_start_time = 0
+                wall_exit_time = 0
+                discovery_exit_time = time.time() # Start cooldown to prevent immediate re-detection and switching back to LOVER
+                
                 # Save specific goal coordinates for navigation
                 if target_color == 2 and red_goal_grid is None:
                     red_goal_grid = (bx, by)
@@ -662,13 +670,11 @@ while r.go_on():
                         target_destination = red_goal_grid
                         
                     planned_path_world = calculate_return_path(current_grid_pos, target_destination, grid)
-                    #mode = PATH_FINDER
+                    mode = PATH_FINDER
                     continue
                 
-                # If we haven't found both yet, keep exploring (Wall Follow first)
-                mode = WALL_FOLLOWER
-                wall_follow_start_time = time.time()
-                wall_pid.error = 0; wall_pid.integ = 0
+                # If we haven't found both yet, stay in explorer with debounce
+                mode = EXPLORER
                 continue
 
 
@@ -769,7 +775,9 @@ while r.go_on():
         if (mode == WALL_FOLLOWER and 
             (wall_follow_start_time != 0 or 
              lost_wall_start_time != 0 or
-             wall_exit_time != 0) and 
+             wall_exit_time != 0 or
+             discovery_exit_time != 0 or #)and
+             lover_start_time != 0) and 
             resync_interruption_start is not None):
             
             interruption_duration = time.time() - resync_interruption_start
@@ -781,6 +789,10 @@ while r.go_on():
                 lost_wall_start_time += interruption_duration
             elif wall_exit_time != 0:
                 wall_exit_time += interruption_duration
+            elif discovery_exit_time != 0:
+                discovery_exit_time += interruption_duration
+            elif lover_start_time != 0:
+                lover_start_time += interruption_duration
                 
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
