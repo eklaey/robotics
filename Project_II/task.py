@@ -60,7 +60,7 @@ has_not_resync = True
 resync_start_time = None
 RESYNC_DURATION = 5.0 # original --> 7.0
 RECALIBRATION_TIMEOUT = 25.0 #original --> 19.0
-TESTING = True # Set to True to disable timeouts and cooldowns for easier testing and debugging
+TESTING = False # Set to True to disable timeouts and cooldowns for easier testing and debugging
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -897,7 +897,6 @@ while r.go_on():
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-np.save("map.npy", grid) # can be viewd with check_map.py
 camera.release()
 cv2.destroyAllWindows()
 r.clean_up()
