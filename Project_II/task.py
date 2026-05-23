@@ -88,7 +88,7 @@ resync_interruption_start = None
 WALL_DETECTION_THRESHOLD = PID_WALL_TARGET - 75 # Threshold to detect a wall and trigger wall following (should be less than PID_WALL_TARGET to avoid oscillation and collision with wall)
 wall_following_side = None
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 25.0
+WALL_FOLLOW_DURATION = 25.0 # 25.0 allows for half wall traversal, 60.0 allows for full traversal around wall, 80 should do 1 full rotation and then continue on other side...
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
@@ -199,9 +199,10 @@ def image_letterboxed():
     raw_img = np.array(r.get_camera()) # Shape: (3, 120, 160)
     _, height, _ = raw_img.shape # (C, H, W) format from robot camera
     
-    # Define the vertical crop limits (e.g., cut off top 30% and bottom 20%)
+    # Define the vertical crop limits (e.g., cut off top 30% to focus on arena)
     y_start = int(120 * 0.30) 
-    y_end = int(120 * 0.80)  
+    #y_end = int(120 * 0.80)  
+    y_end = int(120 * 1.00)  # Keep the full height for better goal detection
                 
     masked_img = raw_img.copy()
     masked_img[:, 0:y_start, :] = 0
@@ -392,6 +393,11 @@ while r.go_on():
     if tx is not None:
         ix, iy = world_to_grid(tx, ty)
         
+        # If we are following a wall, paint our footprint as an obstacle (4). 
+        # Otherwise, paint as a normal path (1).
+        paint_value = 4 if mode == "WALL_FOLLOWER" else 1
+
+        
         # If we have a valid previous position, draw a solid line between them
         if last_ix is not None and last_iy is not None:
             # Determine how many grid cells are between the previous and current step
@@ -401,10 +407,21 @@ while r.go_on():
                 # Linearly interpolate the pixels to ensure zero gaps
                 interp_x = int(round(last_ix + t * (ix - last_ix)))
                 interp_y = int(round(last_iy + t * (iy - last_iy)))
-                set_cell_if_empty(grid, interp_x, interp_y, 1)
+                
+                #set_cell_if_empty(grid, interp_x, interp_y, 1)
+                # Only paint if inside map bounds and NOT overwriting a goal (2 or 3)
+                if 0 <= interp_x < grid.shape[1] and 0 <= interp_y < grid.shape[0]:
+                    if grid[interp_y, interp_x] not in [2, 3]:
+                        # Only overwrite an existing path (1) if we are painting an obstacle (4)
+                        if grid[interp_y, interp_x] == 0 or paint_value == 4:
+                            grid[interp_y, interp_x] = paint_value
         else:
-            set_cell_if_empty(grid, ix, iy, 1)
-            
+            #set_cell_if_empty(grid, ix, iy, 1)
+            if 0 <= ix < grid.shape[1] and 0 <= iy < grid.shape[0]:
+                if grid[iy, ix] not in [2, 3]:
+                    if grid[iy, ix] == 0 or paint_value == 4:
+                        grid[iy, ix] = paint_value
+                                    
         # Update trackers for the next frame iteration
         last_ix, last_iy = ix, iy
 
@@ -456,8 +473,6 @@ while r.go_on():
                 right_speed = NORM_SPEED + ds
 
         if in_danger_zone:
-            r.enable_all_led()
-            r.disable_all_led()
             r.set_speed(left_speed, right_speed)
             continue
 
@@ -468,7 +483,6 @@ while r.go_on():
             # Get all sensor data once
             img = image_letterboxed()
             prox_values = get_smoothed_prox()
-            tof_distance = r.get_tof()
             
             # Process camera detections
             if USE_COLOR_DETECTION:
@@ -510,10 +524,16 @@ while r.go_on():
             
             # --- PRIORITY 1: Try to approach detected goal ---
             if target is not None and target.area > COLOR_DETECTION_THRESHOLD:
-                print(f"Goal detected! Switching to LOVER mode ({target.label}).")
-                mode = LOVER
-                lover_start_time = time.time()
-                continue
+                # print(f"Goal detected! Switching to LOVER mode ({target.label}).")
+                # mode = LOVER
+                # lover_start_time = time.time()
+                # continue
+                if (time.time() - discovery_exit_time) > DISCOVERY_COOLDOWN:
+                    print(f"Goal detected! Switching to LOVER mode ({target.label}).")
+                    mode = LOVER
+                    lover_start_time = time.time()
+                    continue
+
             
             # --- PRIORITY 2: Initiate wall following on obstacle (if no goal nearby) ---
             if (not((time.time() - wall_exit_time) < WALL_EXIT_COOLDOWN) and 
@@ -637,7 +657,7 @@ while r.go_on():
             # Keep tracking the color we locked onto
             target_str = "Red" if target_color == 2 else "Green"
             
-            valid_targets = [d for d in detections if d.label == target_str and d.area > COLOR_DETECTION_THRESHOLD]
+            valid_targets = [d for d in detections if d.label == target_str]
             
             if not valid_targets:
                 print("Lost visual on goal. Returning to EXPLORER.")
@@ -649,7 +669,8 @@ while r.go_on():
             # Check if we have arrived at the block
             tof_distance = r.get_tof()
             prox_values = get_smoothed_prox()
-            
+            tof_distance = 2000 if tof_distance <= 0 else tof_distance # Handle invalid readings
+
             if tof_distance < TARGET_DISTANCE or (prox_values[0] > 500 or prox_values[7] > 500):
                 # Get the grid coordinate of the block to map it
                 block_x = tx + 0.08 * math.cos(yaw)
