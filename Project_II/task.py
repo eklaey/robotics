@@ -96,17 +96,20 @@ WALL_EXIT_COOLDOWN = 1.0
 
 lover_start_time = 0
 LOVER_TIMEOUT = 15.0  # Max time to approach a goal before giving up
+lover_exit_time = 0
+LOVER_EXIT_COOLDOWN = 3.0  # Time to wait after leaving LOVER mode before entering WALL_FOLLOWER again (to avoid immediate wall following after goal approach)
 
 # Object LOVER parameters
 TARGET_DISTANCE = 60
-ANGULAR_GAIN = 0.75
+ANGULAR_GAIN = 0.5
 DISTANCE_GAIN = 1.0
 
-DISCOVERY_COOLDOWN = 5.0 # Seconds to stay in EXPLORER after reaching a goal
+DISCOVERY_COOLDOWN = 10.0 # Seconds to stay in EXPLORER after reaching a goal, in order to give sensors time to readjust and avoid immediately re-detecting the same goal or getting stuck in wall following due to close proximity to the goal
 discovery_exit_time = 0
 
 USE_COLOR_DETECTION = True
 COLOR_DETECTION_THRESHOLD = 500 # Minimum area of color blob to be considered goal
+COLOR_DETECTION_CONFIRMATION = 5000
 
 # Navigation and Mapping
 num_goals_found = 0
@@ -114,7 +117,7 @@ red_goal_grid = None
 green_goal_grid = None
 planned_path_world = [] # Will hold the physical (wx, wy) coordinates to drive to
 
-Kp_nav = 1.5
+Kp_nav = 1.0
 
 ###### simple state machine having basic and resync behaviors ##########
 BASE = "BASE"
@@ -179,7 +182,6 @@ def set_cell_if_empty(grid, x, y, value):
     if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
         if grid[y, x] == 0:
             grid[y, x] = value
-
 def get_smoothed_prox():
     """Fetches raw prox values, applies a moving average, and returns smoothed values."""
     raw_values = r.get_calibrate_prox()
@@ -200,7 +202,7 @@ def image_letterboxed():
     _, height, _ = raw_img.shape # (C, H, W) format from robot camera
     
     # Define the vertical crop limits (e.g., cut off top 30% to focus on arena)
-    y_start = int(120 * 0.30) 
+    y_start = int(120 * 0.50) 
     #y_end = int(120 * 0.80)  
     y_end = int(120 * 1.00)  # Keep the full height for better goal detection
                 
@@ -330,8 +332,8 @@ while tx is None or ty is None:
         time.sleep(0.1) # Wait slightly for the camera thread to catch up
 
 # Now that we have a real position, define borders
-x_min = tx - 0.45   # 0.45
-x_max = tx + 0.45   # 0.45
+x_min = tx - 0.50   # 0.45
+x_max = tx + 0.50   # 0.45
 y_min = ty - 0.40   # 0.30
 y_max = ty + 0.40   # 0.30
 
@@ -356,11 +358,13 @@ r.init_camera("./img")
 cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
 norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
 
+
+
 #############################################################################
 ######################## GO_ON LOOP #########################################
 while r.go_on():
 
-    ################## PRE-PROCESSING FOR CAMERA AND MAP ####################
+    ################## PRE-PROCESSING FOR CAMERA, MAP and SENSORS ####################
     # Get tracking info from camera for safeguard check
     frame, markers = threaded_cam.get_marker_positions()
     if frame is None or frame.size == 0 :
@@ -425,6 +429,13 @@ while r.go_on():
         # Update trackers for the next frame iteration
         last_ix, last_iy = ix, iy
 
+    # Get all sensor data once
+    img = image_letterboxed()
+    prox_values = get_smoothed_prox()
+    tof_distance = r.get_tof()
+    tof_distance = 2000 if tof_distance <= 0 else tof_distance # Handle invalid readings
+
+        
     ############## robot explores and recalibrates the position ############
     update_leds(state, mode, target_color if 'target_color' in locals() else None, wall_following_side)
     
@@ -479,16 +490,9 @@ while r.go_on():
         # -------------------------------------------------------------
         # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
         # -------------------------------------------------------------
-        if mode == EXPLORER:
-            # Get all sensor data once
-            img = image_letterboxed()
-            prox_values = get_smoothed_prox()
-            
+        if mode == EXPLORER:            
             # Process camera detections
-            if USE_COLOR_DETECTION:
-                detections = r.get_colordetection(img)
-            else:
-                detections = None
+            detections = r.get_colordetection(img)
             
             # Filter for available Red and Green targets
             target = None
@@ -538,6 +542,7 @@ while r.go_on():
             # --- PRIORITY 2: Initiate wall following on obstacle (if no goal nearby) ---
             if (not((time.time() - wall_exit_time) < WALL_EXIT_COOLDOWN) and 
                 not((time.time() - discovery_exit_time) < DISCOVERY_COOLDOWN) and
+                not((time.time() - lover_exit_time) < LOVER_EXIT_COOLDOWN) and
                 not has_red_goal_nearby and not has_green_goal_nearby and
                 (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
                  np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
@@ -579,7 +584,7 @@ while r.go_on():
                 wall_exit_time = time.time()
                 continue
             
-            prox_values = get_smoothed_prox()
+            #prox_values = get_smoothed_prox()
             #prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
             
             # Extra safeguard: if it loses the wall completely (sensors near 0), break back to explorer 
@@ -644,9 +649,13 @@ while r.go_on():
         # --- MODE: LOVER MODE (Object Lover based on Color) ----------
         # -------------------------------------------------------------
         elif mode == LOVER:
+            # tof_distance = r.get_tof()
+            # prox_values = get_smoothed_prox()
+            
             # Safety timeout: If we have been trying to approach this block for too long, break back to explorer to avoid getting stuck
             if time.time() - lover_start_time > LOVER_TIMEOUT:
                 print("Lover timeout: Could not reach block. Resuming Explorer mode...")
+                lover_exit_time = time.time()  # Prevent immediate wall following
                 mode = EXPLORER
                 continue
             
@@ -661,17 +670,14 @@ while r.go_on():
             
             if not valid_targets:
                 print("Lost visual on goal. Returning to EXPLORER.")
+                lover_exit_time = time.time()  # Prevent immediate wall following
                 mode = EXPLORER
                 continue
                 
             target = max(valid_targets, key=lambda d: d.area)
-            
-            # Check if we have arrived at the block
-            tof_distance = r.get_tof()
-            prox_values = get_smoothed_prox()
-            tof_distance = 2000 if tof_distance <= 0 else tof_distance # Handle invalid readings
 
-            if tof_distance < TARGET_DISTANCE or (prox_values[0] > 500 or prox_values[7] > 500):
+            if ((tof_distance < TARGET_DISTANCE or (prox_values[0] > 500 or prox_values[7] > 500))
+                and target.area > COLOR_DETECTION_CONFIRMATION):
                 # Get the grid coordinate of the block to map it
                 block_x = tx + 0.08 * math.cos(yaw)
                 block_y = ty + 0.08 * math.sin(yaw)
@@ -710,6 +716,7 @@ while r.go_on():
                     continue
                 
                 # If we haven't found both yet, stay in explorer with debounce
+                lover_exit_time = time.time()  # Prevent immediate wall following
                 mode = EXPLORER
                 continue
 
@@ -734,9 +741,9 @@ while r.go_on():
         # -------------------------------------------------------------
         elif mode == PATH_FINDER:
             if not planned_path_world:
-                # --- PHASE 3: ROBUST FINAL APPROACH CONFIRMATION ---
-                tof_distance = r.get_tof()
-                prox_values = get_smoothed_prox()
+                # # --- PHASE 3: ROBUST FINAL APPROACH CONFIRMATION ---
+                # tof_distance = r.get_tof()
+                # prox_values = get_smoothed_prox()
                 
                 # Check if hardware sensors confirm we are touching/facing the destination block
                 if tof_distance < TARGET_DISTANCE or prox_values[0] > 450 or prox_values[7] > 450:
