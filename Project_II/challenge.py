@@ -56,7 +56,7 @@ if MY_IP == '192.168.2.202':
 else:
     ASSIGNED_TARGET = "Green"
     ASSIGNED_COLOR_ID = 3
-    MARKER_ID = 10
+    MARKER_ID = 9
 
 print(f"Robot IP: {MY_IP} | Assigned Target: {ASSIGNED_TARGET}")
 
@@ -353,6 +353,10 @@ x_max = tx + 0.50   # 0.45
 y_min = ty - 0.40   # 0.30
 y_max = ty + 0.40   # 0.30
 
+# Store world coordinates for each block
+red_goal_world = None
+green_goal_world = None
+
 # create grid map
 grid_width = int((x_max - x_min) / resolution)
 grid_height = int((y_max - y_min) / resolution)
@@ -369,6 +373,8 @@ prox_history = [deque(maxlen=WINDOW_SIZE) for _ in range(8)]
 r.initiate_model()
 os.makedirs("./img", exist_ok=True)
 r.init_camera("./img")
+
+r.init_client_communication()
 
 # Custom Map Colors: 0=Empty(White), 1=Path(Gray), 2=RedGoal(Red), 3=GreenGoal(Green), 4=Obstacle(Black)
 cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
@@ -790,8 +796,11 @@ while r.go_on():
                             green_goal_grid = target_destination
                             target_color_id = 3
                             
-                        # Paint the other robot's block on our local map so it's visible
-                        set_cell_if_empty(grid, other_bx, other_by, target_color_id)
+                        # Forcefully paint a 3x3 patch on our local map --> guarantees any accidental obstacle mapping (4) is erased
+                        for i in range(-2, 3):
+                            for j in range(-2, 3):
+                                if 0 <= other_bx+i < grid.shape[1] and 0 <= other_by+j < grid.shape[0]:
+                                    grid[other_by+j, other_bx+i] = target_color_id
                         
                         # 5. Transition to PATH_FINDER
                         print("+++ PROCEEDING TO PATH FINDER +++")
