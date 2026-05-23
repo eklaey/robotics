@@ -74,9 +74,10 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 5.0 # original --> 7.0
+RESYNC_DURATION = 7.0 # original --> 7.0
 RECALIBRATION_TIMEOUT = 25.0 # original --> 19.0
-TESTING = True # Set to True to disable timeouts and cooldowns for easier testing and debugging
+
+TESTING = False # Set to True to disable timeouts and cooldowns for easier testing and debugging
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -91,9 +92,13 @@ PID_MAX_DS = 1.5
 PID_WALL_TARGET = 150
 wa, wb, wc, wd = 4, 2, 1, 0
 
-DEFAULT_DS_OFFSET = 0.05 #202 0.05, 207 0.1
-K = 0.0055              #202 0.0055, 207 0.0085
-T_D = 0.7               #202 0.7, 207 0.3
+DEFAULT_DS_OFFSET = 0.05
+if MY_IP == '192.168.2.202':
+    K = 0.0055              
+    T_D = 0.7             
+else:
+    K = 0.0055
+    T_D = 0.25 
 T_I = 9999999999
 
 wall_pid = PID(K, T_I, T_D)
@@ -101,7 +106,7 @@ wall_pid = PID(K, T_I, T_D)
 resync_interruption_start = None
 
 # Wall Following timeouts and thresholds
-WALL_DETECTION_THRESHOLD = PID_WALL_TARGET - 75 # Threshold to detect a wall and trigger wall following (should be less than PID_WALL_TARGET to avoid oscillation and collision with wall)
+WALL_DETECTION_THRESHOLD = PID_WALL_TARGET - 50 # Threshold to detect a wall and trigger wall following (should be less than PID_WALL_TARGET to avoid oscillation and collision with wall)
 wall_following_side = None
 wall_follow_start_time = 0
 WALL_FOLLOW_DURATION = 60 # Allows enough time to circumnavitage whole wall
@@ -112,6 +117,10 @@ lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
 WALL_EXIT_COOLDOWN = 1.0
+
+# PATH_FINDER Braitenberg fallback timer
+PATHFINDER_BACKOFF_DURATION = 7.0  # Time to stay in Braitenberg fallback before retrying path following
+pathfinder_backoff_start = 0
 
 lover_start_time = 0
 LOVER_TIMEOUT = 15.0  # Max time to approach a goal before giving up
@@ -280,6 +289,30 @@ def calculate_return_path(start_grid, target_grid, current_grid):
     except nx.NetworkXNoPath:
         print("CRITICAL: No valid path found through the maze!")
         return []
+def serialize_obstacle_cells(grid):
+    cells = [(x, y) for y in range(grid.shape[0]) for x in range(grid.shape[1]) if grid[y, x] == 4]
+    if not cells:
+        return ""
+    return "|".join(f"{x},{y}" for x, y in cells)
+
+def apply_received_obstacles(grid, obstacle_payload):
+    if not obstacle_payload:
+        return
+    for item in obstacle_payload.split("|"):
+        if not item:
+            continue
+        if "," not in item:
+            continue
+        x_str, y_str = item.split(",", 1)
+        try:
+            ox = int(round(float(x_str)))
+            oy = int(round(float(y_str)))
+        except ValueError:
+            continue
+        if 0 <= ox < grid.shape[1] and 0 <= oy < grid.shape[0]:
+            if grid[oy, ox] in (0, 1):
+                grid[oy, ox] = 4
+
 def update_leds(state, mode, target_color, wall_following_side):
     """
     state: current state (BASE or RE_SYNC)
@@ -350,8 +383,8 @@ while tx is None or ty is None:
 # Now that we have a real position, define borders
 x_min = tx - 0.50   # 0.45
 x_max = tx + 0.50   # 0.45
-y_min = ty - 0.40   # 0.30
-y_max = ty + 0.40   # 0.30
+y_min = ty - 0.45   # 0.30
+y_max = ty + 0.45   # 0.30
 
 # Store world coordinates for each block
 red_goal_world = None
@@ -768,58 +801,103 @@ while r.go_on():
                 continue # Safety catch if coords aren't set yet
                 
             # Broadcast my coordinates continuously
+            obs_payload = serialize_obstacle_cells(grid)
             my_msg = f"{ASSIGNED_TARGET}:{my_bx},{my_by}"
+            if obs_payload:
+                my_msg += f";OBS:{obs_payload}"
             r.send_msg(my_msg)
             
             # Check for incoming messages from the other robot
             if r.has_receive_msg():
                 received_msg = r.receive_msg()
                 
-                # Parse the message (Make sure it has the expected format "Color:X,Y")
-                if ":" in received_msg and "," in received_msg:
-                    incoming_color, incoming_coords = received_msg.split(":")
-                    
-                    # Ignore our own echoed messages, only react to the other robot's color
-                    if incoming_color != ASSIGNED_TARGET:
-                        other_bx_str, other_by_str = incoming_coords.split(",")
-                        other_bx = int(other_bx_str)
-                        other_by = int(other_by_str)
-                        
-                        print(f"Transmission received! {incoming_color} block is at Grid: {other_bx}, {other_by}")
-                        
-                        # Save the other robot's goal to our local variables
-                        target_destination = (other_bx, other_by)
-                        if incoming_color == "Red":
-                            red_goal_grid = target_destination
-                            target_color_id = 2
-                        else:
-                            green_goal_grid = target_destination
-                            target_color_id = 3
-                            
-                        # Forcefully paint a 3x3 patch on our local map --> guarantees any accidental obstacle mapping (4) is erased
-                        for i in range(-2, 3):
-                            for j in range(-2, 3):
-                                if 0 <= other_bx+i < grid.shape[1] and 0 <= other_by+j < grid.shape[0]:
-                                    grid[other_by+j, other_bx+i] = target_color_id
-                        
-                        # 5. Transition to PATH_FINDER
-                        print("+++ PROCEEDING TO PATH FINDER +++")
-                        current_grid_pos = world_to_grid(tx, ty)
-                        
-                        # Calculate the path using the coordinates we just received
-                        planned_path_world = calculate_return_path(current_grid_pos, target_destination, grid)
-                        mode = PATH_FINDER
+                # Parse the message: color/coords first, optional obstacle payload after semicolon
+                parts = [part.strip() for part in received_msg.split(";") if part.strip()]
+                if not parts:
+                    continue
+                color_part = parts[0]
+                if ":" not in color_part:
+                    continue
+                incoming_color, incoming_coords = color_part.split(":", 1)
+                incoming_color = incoming_color.strip()
+                incoming_coords = incoming_coords.strip()
+                
+                # Ignore our own echoed messages, only react to the other robot's color
+                if incoming_color != ASSIGNED_TARGET and "," in incoming_coords:
+                    other_bx_str, other_by_str = incoming_coords.split(",", 1)
+                    try:
+                        other_bx = int(round(float(other_bx_str)))
+                        other_by = int(round(float(other_by_str)))
+                    except ValueError:
+                        print(f"Warning: Bad transmission format '{received_msg}', ignoring.")
                         continue
+                    
+                    obstacle_payload = ""
+                    for part in parts[1:]:
+                        if part.startswith("OBS:"):
+                            obstacle_payload = part[4:]
+                            break
+                    if obstacle_payload:
+                        apply_received_obstacles(grid, obstacle_payload)
+                        print(f"Applied received obstacles from {incoming_color} robot.")
+                    
+                    print(f"Transmission received! {incoming_color} block is at Grid: {other_bx}, {other_by}")
+                    
+                    # Save the other robot's goal to our local variables
+                    target_destination = (other_bx, other_by)
+                    if incoming_color == "Red":
+                        red_goal_grid = target_destination
+                        target_color_id = 2
+                    else:
+                        green_goal_grid = target_destination
+                        target_color_id = 3
+                        
+                    # Forcefully paint a 3x3 patch on our local map --> guarantees any accidental obstacle mapping (4) is erased
+                    for i in range(-2, 3):
+                        for j in range(-2, 3):
+                            if 0 <= other_bx+i < grid.shape[1] and 0 <= other_by+j < grid.shape[0]:
+                                grid[other_by+j, other_bx+i] = target_color_id
+                    
+                    # 5. Transition to PATH_FINDER
+                    print("+++ PROCEEDING TO PATH FINDER +++")
+                    current_grid_pos = world_to_grid(tx, ty)
+                    
+                    # Calculate the path using the coordinates we just received
+                    planned_path_world = calculate_return_path(current_grid_pos, target_destination, grid)
+                    mode = PATH_FINDER
+                    continue
         
         # -------------------------------------------------------------
         # --- MODE: PATH FINDER MODE (Navigation) ---------------------
         # -------------------------------------------------------------
         elif mode == PATH_FINDER:
+            # # While pathfinding, if an object gets too close, fall back to a simple Braitenberg avoidance behavior.
+            # too_close = max(prox_values) > WALL_DETECTION_THRESHOLD
+            # backoff_active = (pathfinder_backoff_start != 0 and
+            #                   time.time() - pathfinder_backoff_start < PATHFINDER_BACKOFF_DURATION)
+
+            # if too_close:
+            #     if pathfinder_backoff_start <= 0:
+            #         pathfinder_backoff_start = time.time()
+            #     backoff_active = True
+
+            # if backoff_active:
+            #     prox_right = (ea * prox_values[0] + eb * prox_values[1] + ec * prox_values[2] + ed * prox_values[3]) / (ea + eb + ec + ed)
+            #     prox_left = (ea * prox_values[7] + eb * prox_values[6] + ec * prox_values[5] + ed * prox_values[4]) / (ea + eb + ec + ed)
+            #     left_speed = clamp(NORM_SPEED - (NORM_SPEED * prox_right) / PROX_TH)
+            #     right_speed = clamp(NORM_SPEED - (NORM_SPEED * prox_left) / PROX_TH)
+            #     r.set_speed(left_speed, right_speed)
+            #     if time.time() - pathfinder_backoff_start >= PATHFINDER_BACKOFF_DURATION:
+            #         pathfinder_backoff_start = 0
+            #     continue
+
+            # if pathfinder_backoff_start != 0:
+            #     pathfinder_backoff_start = 0
+
             if not planned_path_world:
-                
                 # Check if hardware sensors confirm we are touching/facing the destination block
                 if tof_distance < TARGET_DISTANCE or prox_values[0] > 450 or prox_values[7] > 450:
-                    print("+++ GOAL REACHED ROBUSTLY! Phase 3 Complete +++")
+                    print("+++ GOAL REACHED +++")
                     mode = GOAL # Transition to final stopped state
                 else:
                     # If odometry claims we arrived but sensors don't see the block yet, 
@@ -848,14 +926,14 @@ while r.go_on():
             
             # Drive forward while turning
             # We slow down the base speed so it doesn't overshoot waypoints
-            nav_speed = NORM_SPEED * 0.8 
+            nav_speed = NORM_SPEED * 0.8
             left_speed = clamp(nav_speed - ds)
             right_speed = clamp(nav_speed + ds)
             
             r.set_speed(left_speed, right_speed)
             
         # -------------------------------------------------------------
-        # --- MODE: GOAL MODE (Phase 3 Stopped Completion State) ------
+        # --- MODE: GOAL MODE -----------------------------------------
         # -------------------------------------------------------------
         elif mode == GOAL:
             # Safely hold position and maintain full structural LED signaling loop
