@@ -434,6 +434,7 @@ while r.go_on():
                     # Single cell for regular paths
                     if 0 <= interp_x < grid.shape[1] and 0 <= interp_y < grid.shape[0]:
                         if grid[interp_y, interp_x] not in [2, 3]:
+                        # Only overwrite an existing path (1) if we are painting an obstacle (4)
                             if grid[interp_y, interp_x] == 0 or paint_value == 4:
                                 grid[interp_y, interp_x] = paint_value
         else:
@@ -463,7 +464,7 @@ while r.go_on():
     tof_distance = r.get_tof()
     tof_distance = 2000 if tof_distance <= 0 else tof_distance # Handle invalid readings
 
-        
+
     ############## robot explores and recalibrates the position ############
     update_leds(state, mode, target_color if 'target_color' in locals() else None, wall_following_side)
     
@@ -518,7 +519,7 @@ while r.go_on():
         # -------------------------------------------------------------
         # --- MODE: EXPLORER MODE (Wandering & Scanning) --------------
         # -------------------------------------------------------------
-        if mode == EXPLORER:            
+        if mode == EXPLORER:
             # Process camera detections
             detections = r.get_colordetection(img)
             
@@ -609,7 +610,7 @@ while r.go_on():
                 turn_bias = np.random.uniform(-1.0, 1.0)
                 left_speed = clamp(left_speed + turn_bias)
                 right_speed = clamp(right_speed - turn_bias)
-            
+
             r.set_speed(left_speed, right_speed)
             
         # -------------------------------------------------------------
@@ -685,9 +686,6 @@ while r.go_on():
         # --- MODE: LOVER MODE (Object Lover based on Color) ----------
         # -------------------------------------------------------------
         elif mode == LOVER:
-            # tof_distance = r.get_tof()
-            # prox_values = get_smoothed_prox()
-            
             # Safety timeout: If we have been trying to approach this block for too long, break back to explorer to avoid getting stuck
             if time.time() - lover_start_time > LOVER_TIMEOUT:
                 print("Lover timeout: Could not reach block. Resuming Explorer mode...")
@@ -734,7 +732,7 @@ while r.go_on():
                 elif target_color == 3 and green_goal_grid is None:
                     green_goal_grid = (bx, by)
                 
-                # --- PHASE 2 TRIGGER CHECK ---
+                # --- TRIGGER PATH FINDER PHASE ---
                 if red_goal_grid is not None and green_goal_grid is not None:
                     print("+++ BOTH GOALS FOUND! INITIATING PATH FINDER +++")
                     r.set_speed(0, 0)
@@ -777,9 +775,6 @@ while r.go_on():
         # -------------------------------------------------------------
         elif mode == PATH_FINDER:
             if not planned_path_world:
-                # # --- PHASE 3: ROBUST FINAL APPROACH CONFIRMATION ---
-                # tof_distance = r.get_tof()
-                # prox_values = get_smoothed_prox()
                 
                 # Check if hardware sensors confirm we are touching/facing the destination block
                 if tof_distance < TARGET_DISTANCE or prox_values[0] > 450 or prox_values[7] > 450:
@@ -875,7 +870,7 @@ while r.go_on():
                 lover_start_time += interruption_duration
             if lover_exit_time != 0:
                 lover_exit_time += interruption_duration
-            
+
                 
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
