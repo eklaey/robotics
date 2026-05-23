@@ -58,9 +58,9 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 5.0 #7.0
-RECALIBRATION_TIMEOUT = 25.0 #19.0
-TESTING = True
+RESYNC_DURATION = 5.0 # original --> 7.0
+RECALIBRATION_TIMEOUT = 25.0 #original --> 19.0
+TESTING = True # Set to True to disable timeouts and cooldowns for easier testing and debugging
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -88,7 +88,10 @@ resync_interruption_start = None
 WALL_DETECTION_THRESHOLD = PID_WALL_TARGET - 75 # Threshold to detect a wall and trigger wall following (should be less than PID_WALL_TARGET to avoid oscillation and collision with wall)
 wall_following_side = None
 wall_follow_start_time = 0
-WALL_FOLLOW_DURATION = 25.0 # 25.0 allows for half wall traversal, 60.0 allows for full traversal around wall, 80 should do 1 full rotation and then continue on other side...
+WALL_FOLLOW_DURATION = 60 # Allows enough time to circumnavitage whole wall
+WALL_FOLLOW_DURATION_MIN = 5.0  # Minimum duration to prevent infinite loops
+wall_follow_count = 0  # Track how many times wall follower has been activated
+current_wall_follow_duration = WALL_FOLLOW_DURATION  # Current duration (decreases with each activation)
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
@@ -178,10 +181,6 @@ def update_pose():
     except Exception as e:
         print("Pose parsing error:", e)
     return last_tx, last_ty, last_yaw
-def set_cell_if_empty(grid, x, y, value):
-    if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
-        if grid[y, x] == 0:
-            grid[y, x] = value
 def get_smoothed_prox():
     """Fetches raw prox values, applies a moving average, and returns smoothed values."""
     raw_values = r.get_calibrate_prox()
@@ -358,7 +357,16 @@ r.init_camera("./img")
 cmap_custom = mcolors.ListedColormap(['white', 'lightgray', 'red', 'green', 'black'])
 norm_custom = mcolors.BoundaryNorm([-.5, 0.5, 1.5, 2.5, 3.5, 4.5], cmap_custom.N)
 
+if not TESTING:
+    print("Initialization complete. Starting main loop...")
+    
+    plt.clf()
+    plt.imshow(np.fliplr(grid), origin='upper', cmap=cmap_custom, norm=norm_custom)
+    plt.title("Map")
+    plt.pause(0.001)        
+    cv2.imshow('RTSP Camera Stream', frame)  #shows camera stream
 
+    r.sleep(20) # Sleep to allow for prepare the arena & video setup
 
 #############################################################################
 ######################## GO_ON LOOP #########################################
@@ -412,19 +420,39 @@ while r.go_on():
                 interp_x = int(round(last_ix + t * (ix - last_ix)))
                 interp_y = int(round(last_iy + t * (iy - last_iy)))
                 
-                #set_cell_if_empty(grid, interp_x, interp_y, 1)
-                # Only paint if inside map bounds and NOT overwriting a goal (2 or 3)
-                if 0 <= interp_x < grid.shape[1] and 0 <= interp_y < grid.shape[0]:
-                    if grid[interp_y, interp_x] not in [2, 3]:
-                        # Only overwrite an existing path (1) if we are painting an obstacle (4)
-                        if grid[interp_y, interp_x] == 0 or paint_value == 4:
-                            grid[interp_y, interp_x] = paint_value
+                # Paint cell(s) - obstacles get thicker (2x2 patch)
+                if paint_value == 4:
+                    # Paint a 2x2 patch for obstacles to make them thicker
+                    for dx in range(2):
+                        for dy in range(2):
+                            px, py = interp_x + dx, interp_y + dy
+                            if 0 <= px < grid.shape[1] and 0 <= py < grid.shape[0]:
+                                if grid[py, px] not in [2, 3]:
+                                    if grid[py, px] == 0 or paint_value == 4:
+                                        grid[py, px] = paint_value
+                else:
+                    # Single cell for regular paths
+                    if 0 <= interp_x < grid.shape[1] and 0 <= interp_y < grid.shape[0]:
+                        if grid[interp_y, interp_x] not in [2, 3]:
+                            if grid[interp_y, interp_x] == 0 or paint_value == 4:
+                                grid[interp_y, interp_x] = paint_value
         else:
-            #set_cell_if_empty(grid, ix, iy, 1)
-            if 0 <= ix < grid.shape[1] and 0 <= iy < grid.shape[0]:
-                if grid[iy, ix] not in [2, 3]:
-                    if grid[iy, ix] == 0 or paint_value == 4:
-                        grid[iy, ix] = paint_value
+            # Single position - paint cell(s)
+            if paint_value == 4:
+                # Paint a 2x2 patch for obstacles
+                for dx in range(2):
+                    for dy in range(2):
+                        px, py = ix + dx, iy + dy
+                        if 0 <= px < grid.shape[1] and 0 <= py < grid.shape[0]:
+                            if grid[py, px] not in [2, 3]:
+                                if grid[py, px] == 0 or paint_value == 4:
+                                    grid[py, px] = paint_value
+            else:
+                # Single cell for regular paths
+                if 0 <= ix < grid.shape[1] and 0 <= iy < grid.shape[0]:
+                    if grid[iy, ix] not in [2, 3]:
+                        if grid[iy, ix] == 0 or paint_value == 4:
+                            grid[iy, ix] = paint_value
                                     
         # Update trackers for the next frame iteration
         last_ix, last_iy = ix, iy
@@ -544,12 +572,16 @@ while r.go_on():
                 not((time.time() - discovery_exit_time) < DISCOVERY_COOLDOWN) and
                 not((time.time() - lover_exit_time) < LOVER_EXIT_COOLDOWN) and
                 not has_red_goal_nearby and not has_green_goal_nearby and
-                (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
-                 np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
-                # (prox_values[0] > WALL_DETECTION_THRESHOLD or prox_values[7] > WALL_DETECTION_THRESHOLD)):
+                # (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
+                #  np.mean([prox_values[7], prox_values[6]]) > WALL_DETECTION_THRESHOLD)):
+                (prox_values[0] > WALL_DETECTION_THRESHOLD or prox_values[7] > WALL_DETECTION_THRESHOLD)):
                 
                 print("Obstacle detected! Initiating PID Wall Follower...")
                 mode = WALL_FOLLOWER
+                wall_follow_count += 1
+                # Progressively reduce duration: subtract some seconds per activation, with minimum floor
+                current_wall_follow_duration = max(WALL_FOLLOW_DURATION - (wall_follow_count * 10), WALL_FOLLOW_DURATION_MIN)
+                print(f"Wall follow attempt #{wall_follow_count}, duration: {current_wall_follow_duration:.1f}s")
                 wall_follow_start_time = time.time()
                 # Reset PID state to avoid erratic behavior from old integral/derivative values
                 wall_pid.error = 0
@@ -571,6 +603,13 @@ while r.go_on():
             left_speed = clamp(NORM_SPEED - ds_left)
             right_speed = clamp(NORM_SPEED - ds_right)
             
+            # --- Frame-dependent Random Jitter ---
+            # Every 150 frames, inject a random turn bias for 5 consecutive frames
+            if frame_count % 150 < 50:
+                turn_bias = np.random.uniform(-1.0, 1.0)
+                left_speed = clamp(left_speed + turn_bias)
+                right_speed = clamp(right_speed - turn_bias)
+            
             r.set_speed(left_speed, right_speed)
             
         # -------------------------------------------------------------
@@ -578,21 +617,18 @@ while r.go_on():
         # -------------------------------------------------------------
         elif mode == WALL_FOLLOWER:
             # Safety timeout: Check if we have spent enough time mapping this block
-            if time.time() - wall_follow_start_time > WALL_FOLLOW_DURATION:
+            if time.time() - wall_follow_start_time > current_wall_follow_duration:
                 print("Circumnavigation complete. Resuming Explorer mode...")
                 mode = EXPLORER
                 wall_exit_time = time.time()
                 continue
             
-            #prox_values = get_smoothed_prox()
-            #prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
-            
             # Extra safeguard: if it loses the wall completely (sensors near 0), break back to explorer 
             # --> E-puck sensors: 0, 1, 2, 3 are Right side; 4, 5, 6, 7 are Left side
             if wall_following_side == 'LEFT':
-                side_sensors = prox_values[5:7]
+                side_sensors = prox_values[5:8]
             elif wall_following_side == 'RIGHT':
-                side_sensors = prox_values[1:3]
+                side_sensors = prox_values[0:3]
             else:
                 # Fallback/Safety: If side is unknown, check all sensors
                 side_sensors = prox_values
@@ -837,6 +873,9 @@ while r.go_on():
                 discovery_exit_time += interruption_duration
             if lover_start_time != 0:
                 lover_start_time += interruption_duration
+            if lover_exit_time != 0:
+                lover_exit_time += interruption_duration
+            
                 
             resync_interruption_start = None # Reset tracker
             print(f"Wall follow timer paused for {interruption_duration:.2f}s due to Re-sync.")
@@ -850,7 +889,6 @@ while r.go_on():
     
     if frame_count % 50 == 0:  # SHOWS updated map every 50 frames
         plt.clf()
-        #plt.imshow(np.fliplr(grid), origin='upper', cmap='gray')
         plt.imshow(np.fliplr(grid), origin='upper', cmap=cmap_custom, norm=norm_custom)
         plt.title("Map")
         plt.pause(0.001)
