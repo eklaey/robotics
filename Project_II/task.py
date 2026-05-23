@@ -58,8 +58,9 @@ startup_done = False
 last_resync = 0
 has_not_resync = True
 resync_start_time = None
-RESYNC_DURATION = 10.0 #7.0
-RECALIBRATION_TIMEOUT = 20.0 #19.0
+RESYNC_DURATION = 5.0 #7.0
+RECALIBRATION_TIMEOUT = 25.0 #19.0
+TESTING = True
 
 # Geofencing
 BUFFER = 0.1 # Safe distance from the border to trigger corrective action
@@ -91,22 +92,21 @@ WALL_FOLLOW_DURATION = 25.0
 lost_wall_start_time = 0
 LOST_WALL_TIMEOUT = 5.0 
 wall_exit_time = 0
-WALL_EXIT_TIMEOUT = 1.0
+WALL_EXIT_COOLDOWN = 1.0
 
 lover_start_time = 0
 LOVER_TIMEOUT = 15.0  # Max time to approach a goal before giving up
 
 # Object LOVER parameters
 TARGET_DISTANCE = 60
-ANGULAR_GAIN = 1.2
+ANGULAR_GAIN = 0.75
 DISTANCE_GAIN = 1.0
 
-DISCOVERY_COOLDOWN = 10.0 # Seconds to stay in EXPLORER after reaching a goal
+DISCOVERY_COOLDOWN = 5.0 # Seconds to stay in EXPLORER after reaching a goal
 discovery_exit_time = 0
 
 USE_COLOR_DETECTION = True
-COLOR_DETECTION_THRESHOLD = 800 # Minimum area of color blob to be considered goal, was working with 1500
-DETECTION_CONFIDENCE = 0.9
+COLOR_DETECTION_THRESHOLD = 500 # Minimum area of color blob to be considered goal
 
 # Navigation and Mapping
 num_goals_found = 0
@@ -261,7 +261,7 @@ def calculate_return_path(start_grid, target_grid, current_grid):
     except nx.NetworkXNoPath:
         print("CRITICAL: No valid path found through the maze!")
         return []
-def update_leds(state, mode, target_color, wall_following_side, num_goals_found):
+def update_leds(state, mode, target_color, wall_following_side):
     """
     state: current state (BASE or RE_SYNC)
     mode: current mode (EXPLORER, LOVER, WALL_FOLLOWER)
@@ -409,8 +409,7 @@ while r.go_on():
         last_ix, last_iy = ix, iy
 
     ############## robot explores and recalibrates the position ############
-    update_leds(state, mode, target_color if 'target_color' in locals() else None, 
-                wall_following_side, num_goals_found)
+    update_leds(state, mode, target_color if 'target_color' in locals() else None, wall_following_side)
     
     if state == BASE:
 
@@ -517,7 +516,7 @@ while r.go_on():
                 continue
             
             # --- PRIORITY 2: Initiate wall following on obstacle (if no goal nearby) ---
-            if (not((time.time() - wall_exit_time) < WALL_EXIT_TIMEOUT) and 
+            if (not((time.time() - wall_exit_time) < WALL_EXIT_COOLDOWN) and 
                 not((time.time() - discovery_exit_time) < DISCOVERY_COOLDOWN) and
                 not has_red_goal_nearby and not has_green_goal_nearby and
                 (np.mean([prox_values[0], prox_values[1]]) > WALL_DETECTION_THRESHOLD or 
@@ -563,16 +562,17 @@ while r.go_on():
             prox_values = get_smoothed_prox()
             #prox_values = r.get_calibrate_prox() # For wall loss detection, we want the raw values to be more sensitive
             
-            # Extra safeguard: if it loses the wall completely (all sensors near 0), break back to explorer --> E-puck sensors: 0, 1, 2, 3 are Right side; 4, 5, 6, 7 are Left side
+            # Extra safeguard: if it loses the wall completely (sensors near 0), break back to explorer 
+            # --> E-puck sensors: 0, 1, 2, 3 are Right side; 4, 5, 6, 7 are Left side
             if wall_following_side == 'LEFT':
                 side_sensors = prox_values[5:7]
             elif wall_following_side == 'RIGHT':
                 side_sensors = prox_values[1:3]
             else:
-                # Fallback/Safety: If side is unknown, check front sensors
+                # Fallback/Safety: If side is unknown, check all sensors
                 side_sensors = prox_values
                 
-            if np.max(side_sensors) < 20:
+            if max(side_sensors) < 20:
                 if lost_wall_start_time is None:
                     lost_wall_start_time = time.time()
                 elif time.time() - lost_wall_start_time > LOST_WALL_TIMEOUT:
@@ -628,22 +628,16 @@ while r.go_on():
             if time.time() - lover_start_time > LOVER_TIMEOUT:
                 print("Lover timeout: Could not reach block. Resuming Explorer mode...")
                 mode = EXPLORER
-                discovery_exit_time = time.time()
                 continue
             
             img = image_letterboxed()
-            if USE_COLOR_DETECTION:
-                detections = r.get_colordetection(img)
-                label_map = {"Red": 2, "Green": 3}
-            else:
-                # detections = r.get_detection(img, conf_thresh=DETECTION_CONFIDENCE)
-                label_map = {"Red Block": 2, "Green Block": 3}    
+            detections = r.get_colordetection(img)
+            label_map = {"Red": 2, "Green": 3}
                         
             # Keep tracking the color we locked onto
             target_str = "Red" if target_color == 2 else "Green"
-            search_str = target_str if USE_COLOR_DETECTION else f"{target_str} Block"
             
-            valid_targets = [d for d in detections if d.label == search_str]
+            valid_targets = [d for d in detections if d.label == target_str and d.area > COLOR_DETECTION_THRESHOLD]
             
             if not valid_targets:
                 print("Lost visual on goal. Returning to EXPLORER.")
@@ -657,7 +651,6 @@ while r.go_on():
             prox_values = get_smoothed_prox()
             
             if tof_distance < TARGET_DISTANCE or (prox_values[0] > 500 or prox_values[7] > 500):
-                print(f"Goal Reached! Mapping {target_str} block and circumnavigating.")
                 # Get the grid coordinate of the block to map it
                 block_x = tx + 0.08 * math.cos(yaw)
                 block_y = ty + 0.08 * math.sin(yaw)
@@ -665,7 +658,8 @@ while r.go_on():
                 
                 # Map and save location of the block on the grid
                 map_block_in_front(tx, ty, yaw, target_color)
-                
+                print(f"Goal Reached! Mapping {target_str} block and circumnavigating.")
+
                 # Reset wall-following timers to avoid hysteresis
                 wall_follow_start_time = 0
                 wall_exit_time = 0
@@ -674,14 +668,12 @@ while r.go_on():
                 # Save specific goal coordinates for navigation
                 if target_color == 2 and red_goal_grid is None:
                     red_goal_grid = (bx, by)
-                    num_goals_found += 1
                 elif target_color == 3 and green_goal_grid is None:
                     green_goal_grid = (bx, by)
-                    num_goals_found += 1
                 
                 # --- PHASE 2 TRIGGER CHECK ---
                 if red_goal_grid is not None and green_goal_grid is not None:
-                    print("+++ BOTH GOALS FOUND! INITIATING PHASE 2 NAVIGATION +++")
+                    print("+++ BOTH GOALS FOUND! INITIATING PATH FINDER +++")
                     r.set_speed(0, 0)
                     
                     # We are currently at the 2nd goal. We need to go back to the 1st goal.
@@ -772,6 +764,10 @@ while r.go_on():
 
     ########### RESYNC ############
     elif state == RE_SYNC:
+        if TESTING:
+            state = BASE
+            continue
+        
         print("Re-syncing pose with ArUco marker...")
         r.set_speed(0, 0)
         if resync_start_time is None:
